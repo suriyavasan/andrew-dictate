@@ -41,6 +41,10 @@ struct MenuBarPanel: View {
         }
         .padding(12)
         .frame(width: Self.width)
+        // the window is sized from the content, and without this the
+        // stack is squeezed to fit a guess: tiles shrink under their own
+        // glyphs and the second lines fall out of their modules.
+        .fixedSize(horizontal: false, vertical: true)
         .background(PanelWindowReader { window = $0 })
     }
 
@@ -231,7 +235,7 @@ struct MenuBarPanel: View {
             title: "fix a word",
             subtitle: coordinator.lastHeard == nil
                 ? "after your first dictation"
-                : "teach it a misheard word",
+                : "teach it a word",
             isOn: false,
             tint: BrandUI.gold,
             stacked: true
