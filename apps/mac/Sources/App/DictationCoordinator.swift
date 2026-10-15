@@ -137,6 +137,10 @@ final class DictationCoordinator: ObservableObject {
     /// the meeting that just ended, for as long as it is the thing you came
     /// back to the menu for.
     @Published private(set) var lastMeeting: MeetingSummary?
+    /// counts every change to a meeting on disk — one saved, one retitled,
+    /// one with a summary written — so a window that lists them knows to
+    /// read them again. a number and nothing else: it says that, never what.
+    @Published private(set) var meetingsRevision = 0
     @Published private(set) var lastMeetingSavedAt: Date?
 
     private static let lastMeetingRowLasts: TimeInterval = 600
@@ -159,6 +163,13 @@ final class DictationCoordinator: ObservableObject {
     /// fn+⌃: off until you turn it on in settings › rewrite.
     let rewriteSettings: RewriteSettings
     let rewriteAccounts: RewriteAccounts
+    /// the notes and titles of meetings: made when one is saved, if the ai
+    /// tab says to, and whenever the meetings window asks. the provider is
+    /// the one rewrite uses.
+    let meetingSummaries: MeetingSummaries
+    /// how loud the meeting is, for the meter alone: kept off this object
+    /// so fifteen changes a second do not redraw everything that watches it.
+    let meetingLevels = MeetingLevelsFeed()
     private lazy var rewriteController: RewriteController = {
         let controller = RewriteController(
             settings: rewriteSettings
@@ -347,8 +358,20 @@ final class DictationCoordinator: ObservableObject {
 
     init(settings: AppSettings = .shared) {
         self.settings = settings
-        rewriteSettings = .shared
-        rewriteAccounts = .shared
+        let rewriteSettings = RewriteSettings.shared
+        let rewriteAccounts = RewriteAccounts.shared
+        self.rewriteSettings = rewriteSettings
+        self.rewriteAccounts = rewriteAccounts
+        meetingSummaries = MeetingSummaries(
+            connect: {
+                await rewriteAccounts.connect(
+                    rewriteSettings.provider,
+                    model: rewriteSettings.model(for: rewriteSettings.provider)
+                )
+            },
+            isEnabled: { rewriteSettings.summariesEnabled },
+            defaultTemplateID: { rewriteSettings.defaultTemplateID }
+        )
         activeDictationModel = settings.dictationModel
         engineSwitchState = EngineSwitchState(
             activeVersion: settings.dictationModel
@@ -512,6 +535,10 @@ final class DictationCoordinator: ObservableObject {
         wireRewrite()
         installSystemLifecycleObservers()
         wireMeetings()
+        // a summary or a title written is a meeting changed on disk.
+        meetingSummaries.onChange = { [weak self] _ in
+            self?.meetingsRevision += 1
+        }
         wireMeetingShortcut()
 
         permissions = SystemPermissions.snapshot()
@@ -606,6 +633,13 @@ final class DictationCoordinator: ObservableObject {
     @discardableResult
     func rebindHotkey(to binding: HotkeyBinding) -> Bool {
         resettingHotkey { hotkeyMonitor.rebind(to: binding) }
+    }
+
+    /// a meeting file was changed by something that is not the coordinator
+    /// (a rename in the meetings window, a delete): the window's list reads
+    /// them again.
+    func noteMeetingsChanged() {
+        meetingsRevision += 1
     }
 
     /// the meetings window, on `select` if given. the window itself is
@@ -2274,7 +2308,14 @@ extension DictationCoordinator {
     /// asked about. `model` is `record with`: this one meeting is heard by
     /// it instead of the default, and only the menu passes one — the pill's
     /// button and the hotkey always use the default.
-    func startMeeting(name: String? = nil, model: SpeechModel? = nil) {
+    ///
+    /// `title` names the meeting, and `appendingTo` records it into an
+    /// existing transcript as a new session instead of a file of its own:
+    /// the meetings window's two ways to start.
+    func startMeeting(
+        name: String? = nil, model: SpeechModel? = nil,
+        title: String? = nil, appendingTo: URL? = nil
+    ) {
         guard !meetings.isRecording else { return }
         guard installedMeetingModels.contains(model ?? settings.meetingModel) else {
             if let model {
@@ -2306,7 +2347,9 @@ extension DictationCoordinator {
             await notifier.requestPermissionIfNeeded()
         }
         withdrawQuestions { !$0.isAboutARecording }
-        meetings.coordinator.start(name: name ?? meetings.currentCall, model: model)
+        meetings.coordinator.start(
+            name: name ?? meetings.currentCall, model: model,
+            title: title, appendingTo: appendingTo)
     }
 
     /// the lines of `record with ▸`, empty when the menu shows none.
@@ -2588,6 +2631,13 @@ extension DictationCoordinator {
                 self?.liveTranscript.elapsed = elapsed
             }
             .store(in: &meetingCancellables)
+        // the meter has an object of its own: this one is not told.
+        built.$levels
+            .removeDuplicates()
+            .sink { [weak self] levels in
+                self?.meetingLevels.levels = levels
+            }
+            .store(in: &meetingCancellables)
         // The menu observes *this* object, not the one nested inside it: a
         // meeting that starts without this line leaves the menu drawing the
         // idle version, with no way to stop what it cannot see.
@@ -2676,7 +2726,11 @@ extension DictationCoordinator {
             // in two seconds — often before you are back at the mac.
             lastMeeting = summary
             lastMeetingSavedAt = Date()
+            meetingsRevision += 1
             meetings.notifier.saved(summary)
+            // the notes are made after the file is on disk and the banner is
+            // up: a summary can take a minute, and never holds the save.
+            meetingSummaries.meetingSaved(at: summary.fileURL)
             // a quit waiting on the transcript is answered by
             // `untilWrittenOut`, not here: this file may be one of two.
         case .saveFailed:
@@ -2698,9 +2752,14 @@ extension DictationCoordinator {
                 if case .cannotHear = event { meetingsNeedAttention = true }
                 runOnboardingAgain(scope: .meetingsOnly, openAt: .permissions)
             }
+        case .transcribedAgain(let summary, _):
+            // the words changed under the summary, which went with them: the
+            // notes are made again, as for any saved meeting.
+            meetingsRevision += 1
+            meetingSummaries.meetingSaved(at: summary.fileURL)
         case .gettingReady, .recovering, .gapBegan, .gapEnded, .problemBegan,
              .problemCleared, .micMuted, .micUnmuted, .writingItOut, .readingAgain,
-             .hookFailed, .transcribingAgain, .transcribedAgain,
+             .hookFailed, .transcribingAgain,
              .couldNotTranscribeAgain:
             break
         }

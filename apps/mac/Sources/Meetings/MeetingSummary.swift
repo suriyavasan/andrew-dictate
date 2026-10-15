@@ -17,4 +17,9 @@ struct MeetingSummary: Identifiable, Equatable, Sendable {
     let gapCount: Int
     /// The spool outlived the app and was transcribed at the next launch.
     let recovered: Bool
+    /// How many times the meeting was recorded into; 1 for a file that does
+    /// not say. Kept audio covers one of them, so a meeting with more is not
+    /// offered a transcribe again. Defaulted, so a summary made without
+    /// reading a file stays a one-session meeting.
+    var sessions: Int = 1
 }

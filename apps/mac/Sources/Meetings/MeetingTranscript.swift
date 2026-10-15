@@ -367,7 +367,8 @@ enum MeetingTranscriptFile {
             duration: front.duration,
             complete: front.complete,
             gapCount: front.gapLines.count,
-            recovered: front.recovered
+            recovered: front.recovered,
+            sessions: front.sessions
         )
     }
 

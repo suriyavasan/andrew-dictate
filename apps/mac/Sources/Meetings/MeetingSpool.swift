@@ -38,6 +38,16 @@ struct MeetingSpool: Sendable {
         /// was last written: at each end of a gap, and at the stop. A spool
         /// holds only the audio it was given, and a sleep gives it none.
         var durationS: Double?
+        /// What the meeting was named when it was started, if it was. User
+        /// words, so it stays in this folder (0600) and nowhere that is
+        /// logged. Optional, like `attempts`: a manifest from before titles
+        /// reads as an untitled meeting.
+        var title: String?
+        /// The transcript this meeting was recorded into, if it was: a
+        /// recovery appends its session to that file instead of making a
+        /// second one, when the file is still there. Optional for the same
+        /// reason as `title`.
+        var appendTo: URL?
 
         var duration: Duration? {
             get { durationS.map { .seconds($0) } }

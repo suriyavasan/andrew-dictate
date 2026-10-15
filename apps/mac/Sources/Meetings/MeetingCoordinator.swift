@@ -266,6 +266,10 @@ final class MeetingCoordinator: ObservableObject {
     @Published private(set) var phase: MeetingPhase = .idle
     @Published private(set) var elapsed: Duration = .zero
     @Published private(set) var liveLines: [LiveLine] = []
+    /// How loud each side is, for the meter on the meetings window's bar:
+    /// at most 15 times a second, and silent again once the meeting stops.
+    /// Numbers only — nothing of what was said is in it.
+    @Published private(set) var levels = MeetingLevels.zero
     /// The app of the spool being written out at launch, while it runs. The
     /// menu draws it; the pill only says it once.
     @Published private(set) var recovering: String? {
@@ -325,6 +329,7 @@ final class MeetingCoordinator: ObservableObject {
     /// Whether the mic is heard, for the meeting being recorded.
     private var micWatch: MicWatch
     private var nudgePending = false
+    private var levelMeter = MeetingLevelMeter()
     /// The tap hears this app too, so the tones it plays to prove itself —
     /// the start sound after every rebuild, the quiet probe when the far
     /// side has gone quiet — land in the far channel a moment later. Until
@@ -475,7 +480,16 @@ final class MeetingCoordinator: ObservableObject {
     /// `name` is the call app's, once something can tell which one held the
     /// mic at the start (ADR 0047); without one the meeting is `unnamed`.
     /// It is a name and nothing more: the tap hears the whole mac either way.
-    func start(name: String? = nil, model: SpeechModel? = nil) {
+    ///
+    /// `title` is what the meeting is to be called, if you named it, and
+    /// `appendingTo` is a transcript to record into: the meeting becomes a
+    /// new session at the end of that file instead of a file of its own —
+    /// unless the file is gone by the time it is written, when it is a file
+    /// of its own after all.
+    func start(
+        name: String? = nil, model: SpeechModel? = nil,
+        title: String? = nil, appendingTo: URL? = nil
+    ) {
         guard session.state == .idle else { return }
         // `model` is `record with`: this one meeting's model, in its own
         // snapshot, so the spool, the file and a recovery all say the model
@@ -484,7 +498,7 @@ final class MeetingCoordinator: ObservableObject {
         if let model { snapshot.model = model }
         let meeting = Meeting(
             app: name ?? Self.unnamed, started: date(),
-            preferences: snapshot)
+            preferences: snapshot, title: title, appendTo: appendingTo)
         current = meeting
         meeting.awake = keepAwake.hold()
 
@@ -494,6 +508,8 @@ final class MeetingCoordinator: ObservableObject {
         nextDiskLook = nil
         elapsed = .zero
         liveLines = []
+        levelMeter.reset()
+        levels = .zero
         startedOn = nil
         lastChunkArrived = now()
         deliveryAskedOn = nil
@@ -693,7 +709,8 @@ final class MeetingCoordinator: ObservableObject {
         let model = meeting.preferences.model
         let handle = try spool.begin(.init(
             app: meeting.app, started: meeting.started,
-            engine: model.rawValue, model: model))
+            engine: model.rawValue, model: model,
+            title: meeting.title, appendTo: meeting.appendTo))
         do {
             meeting.audioFile = try openAudioFile(handle.audioURL)
         } catch {
@@ -735,6 +752,8 @@ final class MeetingCoordinator: ObservableObject {
         let end = max(elapsed, wallElapsed)
         meeting.notes.stopped = now()
         meeting.notes.ran = end
+        levelMeter.reset()
+        levels = .zero
         // counted as being written out before it is let go, so the phase
         // goes from the meeting straight to writing it out, never idle for
         // a moment between. one that never heard its start sound has no
@@ -1033,6 +1052,11 @@ final class MeetingCoordinator: ObservableObject {
             spoolRefused(meeting, refused)
         } else if written {
             clear(.cannotSaveTheAudio, noting: .audioUnsavedCleared, in: meeting)
+        }
+        if let heard = levelMeter.hear(
+            youRMS: chunk.youRMS, themRMS: chunk.themRMS, at: now()
+        ), heard != levels {
+            levels = heard
         }
 
         // What the source last heard from the HAL, asked on its own queue:
@@ -1532,6 +1556,7 @@ final class MeetingCoordinator: ObservableObject {
             covered, recording: recording, clock: clock, handle: handle,
             app: meeting.app, started: meeting.started, model: prefs.model,
             folder: prefs.folder, keepAudio: prefs.keepAudio, recovered: false,
+            title: meeting.title, appendTo: meeting.appendTo,
             notes: meeting.notes, speakers: meeting.speakers)
         if let label = saved?.keep {
             await keep(handle, as: label)
@@ -1668,6 +1693,8 @@ final class MeetingCoordinator: ObservableObject {
         folder: URL,
         keepAudio: KeepMeetingAudio,
         recovered: Bool,
+        title: String? = nil,
+        appendTo: URL? = nil,
         notes: MeetingRecord.Notes = .init(),
         speakers: SpeakerSplit? = nil
     ) async -> Saved? {
@@ -1686,6 +1713,7 @@ final class MeetingCoordinator: ObservableObject {
             recovered: recovered,
             reason: thin ? covered.reason : nil,
             nobodySpoke: !thin && covered.reading.nobodySpoke,
+            title: title,
             turns: split
         )
         func record(
@@ -1706,7 +1734,7 @@ final class MeetingCoordinator: ObservableObject {
 
         let url: URL
         do {
-            url = try MeetingTranscriptFile.write(transcript, in: folder)
+            url = try store(transcript, in: folder, appendingTo: appendTo)
         } catch {
             // The spool stays: it is the only copy, and next launch will
             // find it and try again. Said out loud — "writing it out…" was
@@ -1757,6 +1785,25 @@ final class MeetingCoordinator: ObservableObject {
                 gaps: recording.gaps.map { [$0.began.totalSeconds, $0.ended.totalSeconds] },
                 recovered: recovered),
             keep: keep)
+    }
+
+    /// The file a meeting is written to: a session at the end of the
+    /// transcript it was recorded into, while that file is there and takes
+    /// it, and otherwise a file of its own in `folder`. A file you deleted
+    /// while the meeting ran, or edited past reading, never costs the
+    /// meeting: it is written where meetings go, and the log says only that
+    /// it was.
+    private func store(
+        _ transcript: MeetingTranscript, in folder: URL, appendingTo: URL?
+    ) throws -> URL {
+        if let appendingTo, FileManager.default.fileExists(atPath: appendingTo.path) {
+            do {
+                return try MeetingTranscriptFile.append(transcript, to: appendingTo)
+            } catch {
+                logger.error("a meeting could not be added to its transcript, so it is a file of its own: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        return try MeetingTranscriptFile.write(transcript, in: folder)
     }
 
     private func runHook(_ hook: URL?, telling event: MeetingSavedEvent) async {
@@ -1880,7 +1927,9 @@ final class MeetingCoordinator: ObservableObject {
                 model: model,
                 folder: prefs.folder,
                 keepAudio: prefs.keepAudio,
-                recovered: true)
+                recovered: true,
+                title: manifest.title,
+                appendTo: manifest.appendTo)
             if let label = saved?.keep {
                 await keep(handle, as: label)
             }
@@ -2087,6 +2136,12 @@ extension MeetingCoordinator {
         /// Read once, at the start: the folder, the model and the hook this
         /// meeting is written out with, whatever settings say by the end.
         let preferences: MeetingPreferences
+        /// What it was named when it was started, if it was: user words, so
+        /// only ever written to its file and its spool's manifest.
+        let title: String?
+        /// The transcript it is recorded into, if it is: written out as a
+        /// session at the end of that file when the file is still there.
+        let appendTo: URL?
         /// Set once the spool is open, and nil for good if it never was.
         var handle: MeetingSpool.Handle?
         var audioFile: (any MeetingAudioWriter)?
@@ -2126,10 +2181,15 @@ extension MeetingCoordinator {
         /// what the phase calls writing it out.
         var hasAFile = false
 
-        init(app: String, started: Date, preferences: MeetingPreferences) {
+        init(
+            app: String, started: Date, preferences: MeetingPreferences,
+            title: String? = nil, appendTo: URL? = nil
+        ) {
             self.app = app
             self.started = started
             self.preferences = preferences
+            self.title = title
+            self.appendTo = appendTo
         }
 
         var spooledSoFar: Duration {
@@ -2255,6 +2315,10 @@ extension MeetingCoordinator {
         case thin(SpeechModel, String)
         /// It found no speech on either side, over a transcript with words.
         case nobodySpoke(SpeechModel)
+        /// The meeting was recorded into more than once. Kept audio is one
+        /// session's — the first, or whichever the label names — so reading
+        /// it again would replace every session's words with one's.
+        case severalSessions
 
         var errorDescription: String? {
             switch self {
@@ -2266,6 +2330,7 @@ extension MeetingCoordinator {
             case .deleted: "the transcript was deleted"
             case .thin(let model, let reason): "\(model.shortName) read it thin: \(reason)"
             case .nobodySpoke(let model): "\(model.shortName) heard nobody speak"
+            case .severalSessions: "it was recorded in more than one go, and its audio is only one of them"
             }
         }
     }
@@ -2351,6 +2416,9 @@ extension MeetingCoordinator {
             throw AgainFailure.unreadable
         }
         attempt.header = header
+        guard header.sessions <= 1 else {
+            throw AgainFailure.severalSessions
+        }
         guard let entry = keptAudio.entry(for: transcript) else {
             throw AgainFailure.noAudio
         }
