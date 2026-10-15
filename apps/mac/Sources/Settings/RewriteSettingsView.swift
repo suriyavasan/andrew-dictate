@@ -1,9 +1,11 @@
 import AppKit
 import SwiftUI
 
-/// settings › rewrite: fn+⌃. whether it is on, the key that asks for it,
-/// who rewrites, with what model, and the styles. the one tab whose words
-/// can leave the mac, so it says so at the foot.
+/// settings › ai: the one tab whose words can leave the mac, so it says so
+/// at the foot. three sections: the provider (who answers, with what
+/// model), which both of the others use; the rewrite (fn+⌃: whether it is
+/// on, the key that asks for it, the styles); and the summaries of
+/// meetings (whether they run on their own, and in what shape).
 struct RewriteSettingsView: View {
     @ObservedObject var settings: RewriteSettings
     @ObservedObject var accounts: RewriteAccounts
@@ -31,6 +33,17 @@ struct RewriteSettingsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 13) {
+                BrandSectionHeader("provider")
+                providerRow
+                if settings.provider.needsModelChoice {
+                    divider
+                    modelRow
+                }
+
+                // the sections are told apart by space and a header; the
+                // hairline is for rows inside one.
+                BrandSectionHeader("rewrite")
+                    .padding(.top, 8)
                 SettingsToggleRow(
                     "rewrite with \(gesture)",
                     explanation: "hold \(gesture), talk, let go, and an ai rewrites it before it lands. plain \(dictationKey.displayName) never leaves this mac.",
@@ -39,14 +52,20 @@ struct RewriteSettingsView: View {
                 divider
                 keyRow
                 divider
-                providerRow
-                if settings.provider.needsModelChoice {
-                    divider
-                    modelRow
-                }
-                divider
                 stylesSection
+
+                BrandSectionHeader("summaries")
+                    .padding(.top, 8)
+                SettingsToggleRow(
+                    "summarize meetings when they end",
+                    explanation: summariesExplanation,
+                    isOn: $settings.summariesEnabled
+                )
                 divider
+                templateRow
+
+                divider
+                    .padding(.top, 6)
                 privacyFootnote
             }
             .padding(.horizontal, 24)
@@ -158,14 +177,14 @@ struct RewriteSettingsView: View {
         }
     }
 
-    // MARK: - who rewrites
+    // MARK: - who answers
 
     private var providerRow: some View {
         VStack(alignment: .trailing, spacing: 10) {
             HStack(alignment: .top, spacing: 16) {
                 SettingsRowLabel(
-                    "who rewrites it",
-                    explanation: settings.provider.setupExplanation
+                    "who answers",
+                    explanation: "\(settings.provider.setupExplanation) rewrites and meeting summaries both ask it."
                 )
                 Spacer(minLength: 8)
                 Picker("", selection: $settings.provider) {
@@ -176,7 +195,7 @@ struct RewriteSettingsView: View {
                 .labelsHidden()
                 .brandMenuStyle()
                 .frame(width: Self.controlWidth)
-                .accessibilityLabel("who rewrites it")
+                .accessibilityLabel("who answers")
             }
             accountControls
                 .frame(maxWidth: .infinity, alignment: .trailing)
@@ -286,7 +305,7 @@ struct RewriteSettingsView: View {
         HStack(alignment: .top, spacing: 16) {
             SettingsRowLabel(
                 "model",
-                explanation: "a small, fast model is plenty: a rewrite is a sentence or two. \(settings.provider.defaultModel) unless you pick another."
+                explanation: "a small, fast model is plenty: a rewrite is a sentence or two, and notes are no harder. \(settings.provider.defaultModel) unless you pick another."
             )
             Spacer(minLength: 8)
             TextField(settings.provider.defaultModel, text: $modelDraft)
@@ -451,6 +470,48 @@ struct RewriteSettingsView: View {
         return notes.isEmpty ? tone : "\(tone) · \(notes)"
     }
 
+    // MARK: - summaries
+
+    /// says where the transcript goes, because this is the switch that
+    /// sends other people's words somewhere.
+    private var summariesExplanation: String {
+        switch settings.provider {
+        case .apple:
+            "when a meeting is saved its transcript is read by apple's model and the notes land at the top of the file. it stays on this mac. regenerate any time from the meetings window."
+        default:
+            "when a meeting is saved its transcript goes to \(settings.provider.shortName) and the notes land at the top of the file. regenerate any time from the meetings window."
+        }
+    }
+
+    /// an id this build doesn't know shows as auto, which is also what
+    /// the summary will use for it.
+    private var templateBinding: Binding<String> {
+        Binding(
+            get: { MeetingTemplate.resolving(settings.defaultTemplateID).id },
+            set: { settings.defaultTemplateID = $0 }
+        )
+    }
+
+    private var templateRow: some View {
+        HStack(alignment: .top, spacing: 16) {
+            SettingsRowLabel(
+                "template",
+                explanation: "how notes are laid out unless a meeting has its own."
+            )
+            Spacer(minLength: 8)
+            Picker("", selection: templateBinding) {
+                ForEach(MeetingTemplate.builtIn) { template in
+                    Label(template.name, systemImage: template.symbol)
+                        .tag(template.id)
+                }
+            }
+            .labelsHidden()
+            .brandMenuStyle()
+            .frame(width: Self.controlWidth)
+            .accessibilityLabel("template")
+        }
+    }
+
     // MARK: - privacy
 
     private var privacyFootnote: some View {
@@ -469,9 +530,9 @@ struct RewriteSettingsView: View {
     private var privacyLine: String {
         switch settings.provider {
         case .apple:
-            "apple's model runs on this mac: a rewrite never leaves it."
+            "apple's model runs on this mac: neither a rewrite nor a summary leaves it."
         default:
-            "a rewrite sends what you said, and nothing else, to \(settings.provider.shortName). keys and sign-ins stay in your keychain."
+            "a rewrite sends what you said, a summary sends what a meeting heard, and nothing else, to \(settings.provider.shortName). keys and sign-ins stay in your keychain."
         }
     }
 }

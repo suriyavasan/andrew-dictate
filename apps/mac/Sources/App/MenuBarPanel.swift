@@ -2,9 +2,10 @@ import AppKit
 import SwiftUI
 
 /// the badge's panel: control center's shape, the app's words. a header
-/// that says whether you can talk, the meeting while one runs, two tiles
-/// for what you reach for, a list of what needs you that is empty when
-/// nothing does, and the app's own lines at the foot.
+/// that says whether you can talk, the meeting while one runs (or the
+/// record tile with the meetings window under it), two tiles for what you
+/// reach for, a list of what needs you that is empty when nothing does,
+/// and the app's own lines at the foot.
 ///
 /// the rows are the menu's (ADR 0030): nothing here is configuration
 /// that belongs in settings. a tile that switches something (the rewrite,
@@ -132,6 +133,15 @@ struct MenuBarPanel: View {
                     .lineLimit(2)
                 }
                 Spacer(minLength: 0)
+                // on the clock's line, not beside stop: with "hide live
+                // transcript" the second line has no width to spare. it is
+                // here while the meeting is written out too, because that
+                // is when the notes arrive.
+                PillButton("open", symbol: "rectangle.on.rectangle") {
+                    close()
+                    coordinator.openMeetings()
+                }
+                .accessibilityLabel("open the meetings window")
             }
             if coordinator.meetings.isRecording {
                 HStack(spacing: 8) {
@@ -162,6 +172,15 @@ struct MenuBarPanel: View {
     /// records leads the tile's second line for as long as it lasts; the
     /// other meeting models on this mac are behind its chevron.
     private var recordTile: some View {
+        VStack(spacing: 0) {
+            recordRow
+            Divider().padding(.leading, 50)
+            meetingsRow
+        }
+        .panelModule()
+    }
+
+    private var recordRow: some View {
         HStack(spacing: 0) {
             TileButton(
                 symbol: "record.circle",
@@ -201,7 +220,22 @@ struct MenuBarPanel: View {
                 .accessibilityLabel("record with another model")
             }
         }
-        .panelModule()
+    }
+
+    /// the way to what the meetings left behind: the window with every
+    /// meeting's notes and transcript. in the record tile's module because
+    /// it is the same errand's other end.
+    private var meetingsRow: some View {
+        TileButton(
+            symbol: "list.bullet.rectangle",
+            title: "meetings",
+            subtitle: "notes and transcripts",
+            isOn: false,
+            tint: BrandUI.gold
+        ) {
+            close()
+            coordinator.openMeetings()
+        }
     }
 
     // MARK: - tiles

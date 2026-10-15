@@ -229,13 +229,13 @@ extension RewriteProvider {
     var setupExplanation: String {
         switch self {
         case .chatGPT:
-            "sign in and your chatgpt plan pays for rewrites. no api key, no bill."
+            "sign in and your chatgpt plan pays for rewrites and summaries. no api key, no bill."
         case .openAI:
             "an api key from platform.openai.com, billed to that account."
         case .openRouter:
             "sign in to make a key, or paste one. many models, one key."
         case .gemini:
-            "a key from google ai studio. the free tier covers a lot of rewriting."
+            "a key from google ai studio. the free tier covers a lot of rewriting and summarizing."
         case .apple:
             "apple intelligence, on this mac. free and private, and the smallest model of these."
         }
