@@ -22,10 +22,10 @@ struct RewritePick: Equatable, Sendable {
     let styles: [RewriteStyle]
     let startsOn: Int
 
-    init(styles: [RewriteStyle], lastStyleID: String) {
+    init(styles: [RewriteStyle], defaultStyleID: String) {
         let styles = Array(styles.prefix(9))
         self.styles = styles.isEmpty ? [.auto] : styles
-        startsOn = self.styles.firstIndex { $0.id == lastStyleID } ?? 0
+        startsOn = self.styles.firstIndex { $0.id == defaultStyleID } ?? 0
     }
 
     var startingStyle: RewriteStyle {

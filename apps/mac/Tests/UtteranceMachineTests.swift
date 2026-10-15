@@ -1383,6 +1383,32 @@ final class UtteranceMachineTests: XCTestCase {
         XCTAssertNil(presses.first?.rewriteResult)
     }
 
+    /// the modifier says "this take is a rewrite" once: the first time is
+    /// the coordinator's cue to start watching the pointer, and ⌃ held
+    /// through every later flags change must not restart the watch.
+    func testTheModifierMarksATakeOnceAndOnlyWhileRecording() async {
+        let m = machine()
+        engine.reply = .success("the build failed")
+        m.rewrite = { _ in .asSaid }
+
+        XCTAssertFalse(m.rewriteModifierPressed())
+        m.keyDown()
+        await pass(.milliseconds(500))
+        XCTAssertTrue(m.rewriteModifierPressed())
+        XCTAssertFalse(m.rewriteModifierPressed())
+        await pass(.milliseconds(500))
+        m.keyUp()
+        await settle { self.inserter.inserted.count == 1 }
+        await pass(.seconds(1))
+
+        m.keyDown()
+        await pass(.milliseconds(500))
+        XCTAssertTrue(m.rewriteModifierPressed())
+        await pass(.milliseconds(500))
+        m.keyUp()
+        await settle { self.inserter.inserted.count == 2 }
+    }
+
     /// with the rewrite off, ⌃ means nothing, as it always has.
     func testTheModifierMeansNothingWhileTheRewriteIsOff() async {
         let m = machine()

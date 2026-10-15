@@ -48,20 +48,20 @@ struct HotkeyBinding: Codable, Hashable, Identifiable, Sendable {
         .leftControl,
     ]
 
+    /// the key held with this one to have the take rewritten (fn+⌃): the
+    /// one you chose, unless it is the dictation key's own kind — ⌃ held
+    /// with right ⌃ is no second key — and then the first that is free.
+    func rewriteModifier(preferring preferred: RewriteModifier) -> RewriteModifier {
+        if preferred.isFree(alongside: self) {
+            return preferred
+        }
+        return RewriteModifier.allCases.first { $0.isFree(alongside: self) }
+            ?? .shift
+    }
+
     /// the whole gesture in one line, so the settings row and anything that
     /// adopts it later cannot say it two ways. the words are the hud's own
     /// — the pill says "locked — tap to end", so this says locks and end.
-    /// the key held with this one to have the take rewritten (fn+⌃). ⌃,
-    /// unless ⌃ is the dictation key itself: then ⌥.
-    var rewriteModifier: RewriteModifier {
-        switch keyCode {
-        case Self.rightControl.keyCode, Self.leftControl.keyCode:
-            .option
-        default:
-            .control
-        }
-    }
-
     static let gestureExplanation =
         "hold it and talk. double-tap locks it on hands-free, tap once to end. esc cancels."
 }
@@ -90,22 +90,55 @@ extension UserDefaults {
     }
 }
 
-/// the modifier that turns a take into a rewrite.
-enum RewriteModifier: Equatable, Sendable {
+/// the second key, held with the dictation key, that turns a take into a
+/// rewrite. the rawValue is what settings keep.
+enum RewriteModifier: String, CaseIterable, Codable, Identifiable, Sendable {
     case control
     case option
+    case shift
+    case command
+
+    var id: String {
+        rawValue
+    }
 
     var symbol: String {
         switch self {
         case .control: "⌃"
         case .option: "⌥"
+        case .shift: "⇧"
+        case .command: "⌘"
         }
+    }
+
+    /// "⌃ control": the chip in settings, symbol and word both, since not
+    /// everyone reads the symbols.
+    var displayName: String {
+        "\(symbol) \(rawValue)"
     }
 
     var flag: NSEvent.ModifierFlags {
         switch self {
         case .control: .control
         case .option: .option
+        case .shift: .shift
+        case .command: .command
         }
+    }
+
+    /// the left and right keys that set this flag.
+    private var keyCodes: Set<CGKeyCode> {
+        switch self {
+        case .control: [59, 62]
+        case .option: [58, 61]
+        case .shift: [56, 60]
+        case .command: [54, 55]
+        }
+    }
+
+    /// whether it can be told apart from the dictation key: a right ⌥
+    /// dictation key sets the ⌥ flag itself, so every take would rewrite.
+    func isFree(alongside binding: HotkeyBinding) -> Bool {
+        !keyCodes.contains(binding.keyCode)
     }
 }

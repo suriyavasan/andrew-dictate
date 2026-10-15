@@ -437,7 +437,10 @@ final class DictationCoordinator: ObservableObject {
             self?.machine.escape() ?? false
         }
         monitor.onRewriteModifier = { [weak self] in
-            self?.machine.rewriteModifierPressed()
+            guard let self, self.machine.rewriteModifierPressed() else {
+                return
+            }
+            self.rewriteController.takeBegan()
         }
         // built ahead of the first press, off the main thread, and with
         // pre-roll on, listening.
@@ -3146,6 +3149,12 @@ extension DictationCoordinator {
                     guard let self else { return .asSaid }
                     return await self.rewriteController.run(text)
                 }
+            }
+            .store(in: &settingsCancellables)
+        rewriteSettings.$modifier
+            .removeDuplicates()
+            .sink { [weak self] modifier in
+                self?.hotkeyMonitor.rewritePreference = modifier
             }
             .store(in: &settingsCancellables)
     }

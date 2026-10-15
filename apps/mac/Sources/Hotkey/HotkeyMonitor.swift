@@ -18,6 +18,9 @@ final class HotkeyMonitor {
     /// with something else: sent on every such change, and the machine
     /// keeps it only for a take that is recording.
     var onRewriteModifier: (() -> Void)?
+    /// the second key chosen in settings › rewrite; the binding steps it
+    /// aside when it is the dictation key's own kind.
+    var rewritePreference: RewriteModifier = .control
     var onEscape: (() -> Bool)?
 
     private var monitors: [Any] = []
@@ -124,7 +127,9 @@ final class HotkeyMonitor {
         // before anything else reads the event: the modifier can go down
         // before the key, with it, or at any time while the take records.
         if !isDetectionOnly,
-           event.modifierFlags.contains(binding.rewriteModifier.flag) {
+           event.modifierFlags.contains(
+               binding.rewriteModifier(preferring: rewritePreference).flag
+           ) {
             onRewriteModifier?()
         }
 

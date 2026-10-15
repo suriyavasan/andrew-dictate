@@ -86,7 +86,7 @@ final class RewriteStyleTests: XCTestCase {
     /// it starts on the style used last, and takes that one when nothing
     /// is picked.
     func testThePickerStartsOnTheLastStyle() {
-        let pick = RewritePick(styles: RewriteStyle.builtIn, lastStyleID: "casual")
+        let pick = RewritePick(styles: RewriteStyle.builtIn, defaultStyleID: "casual")
         XCTAssertEqual(pick.startingStyle, .casual)
         XCTAssertEqual(pick.buttons.map(\.isDefault), [false, false, true, false])
         XCTAssertEqual(pick.buttons.map(\.key), ["1", "2", "3", "0"])
@@ -94,12 +94,12 @@ final class RewriteStyleTests: XCTestCase {
     }
 
     func testAGoneStyleStartsOnTheFirst() {
-        let pick = RewritePick(styles: RewriteStyle.builtIn, lastStyleID: "custom-gone")
+        let pick = RewritePick(styles: RewriteStyle.builtIn, defaultStyleID: "custom-gone")
         XCTAssertEqual(pick.startingStyle, .auto)
     }
 
     func testTheDigitsPick() {
-        let pick = RewritePick(styles: RewriteStyle.builtIn, lastStyleID: "auto")
+        let pick = RewritePick(styles: RewriteStyle.builtIn, defaultStyleID: "auto")
         XCTAssertEqual(pick.choice(forDigit: 2), .style(.professional))
         XCTAssertEqual(pick.choice(forDigit: 0), .asSaid)
         XCTAssertNil(pick.choice(forDigit: 4))
@@ -111,7 +111,7 @@ final class RewriteStyleTests: XCTestCase {
     /// one digit per style: nine at most.
     func testThePickerHoldsNine() {
         let many = (0..<12).map { RewriteStyle.custom(name: "s\($0)") }
-        let pick = RewritePick(styles: many, lastStyleID: "")
+        let pick = RewritePick(styles: many, defaultStyleID: "")
         XCTAssertEqual(pick.styles.count, 9)
     }
 
@@ -134,7 +134,8 @@ final class RewriteStyleTests: XCTestCase {
     func testTheRewriteStartsOff() {
         let settings = RewriteSettings(userDefaults: defaults())
         XCTAssertFalse(settings.isEnabled)
-        XCTAssertEqual(settings.lastStyleID, "auto")
+        XCTAssertEqual(settings.defaultStyleID, "auto")
+        XCTAssertEqual(settings.modifier, .control)
         XCTAssertEqual(settings.pickerStyles, RewriteStyle.builtIn)
     }
 
@@ -146,7 +147,8 @@ final class RewriteStyleTests: XCTestCase {
         settings.provider = .openRouter
         settings.save(slack)
         settings.setModel("  some/model  ", for: .openRouter)
-        settings.lastStyleID = slack.id
+        settings.defaultStyleID = slack.id
+        settings.modifier = .shift
 
         let reread = RewriteSettings(userDefaults: store)
         XCTAssertTrue(reread.isEnabled)
@@ -154,17 +156,18 @@ final class RewriteStyleTests: XCTestCase {
         XCTAssertEqual(reread.customStyles, [slack])
         XCTAssertEqual(reread.model(for: .openRouter), "some/model")
         XCTAssertEqual(reread.model(for: .gemini), RewriteProvider.gemini.defaultModel)
-        XCTAssertEqual(reread.lastStyleID, slack.id)
+        XCTAssertEqual(reread.defaultStyleID, slack.id)
+        XCTAssertEqual(reread.modifier, .shift)
     }
 
     func testRemovingTheLastStyleFallsBackToAuto() {
         let settings = RewriteSettings(userDefaults: defaults())
         let mine = RewriteStyle.custom(name: "mine")
         settings.save(mine)
-        settings.lastStyleID = mine.id
+        settings.defaultStyleID = mine.id
         settings.remove(mine)
         XCTAssertEqual(settings.customStyles, [])
-        XCTAssertEqual(settings.lastStyleID, "auto")
+        XCTAssertEqual(settings.defaultStyleID, "auto")
     }
 
     func testABuiltInCannotBeChangedOrAddedTwice() {
@@ -182,12 +185,17 @@ final class RewriteStyleTests: XCTestCase {
 
     // MARK: - the key
 
-    /// ⌃ turns a take into a rewrite, unless ⌃ is the dictation key.
-    func testTheRewriteModifierStepsAsideForAControlKey() {
-        XCTAssertEqual(HotkeyBinding.fn.rewriteModifier, .control)
-        XCTAssertEqual(HotkeyBinding.rightOption.rewriteModifier, .control)
-        XCTAssertEqual(HotkeyBinding.leftControl.rewriteModifier, .option)
-        XCTAssertEqual(HotkeyBinding.rightControl.rewriteModifier, .option)
+    /// the key you chose turns a take into a rewrite, unless it is the
+    /// dictation key's own kind: then the first that is free stands in.
+    func testTheRewriteModifierStepsAsideForTheDictationKeysOwnKind() {
+        XCTAssertEqual(HotkeyBinding.fn.rewriteModifier(preferring: .control), .control)
+        XCTAssertEqual(HotkeyBinding.fn.rewriteModifier(preferring: .command), .command)
+        XCTAssertEqual(HotkeyBinding.rightOption.rewriteModifier(preferring: .control), .control)
+        XCTAssertEqual(HotkeyBinding.leftControl.rewriteModifier(preferring: .control), .option)
+        XCTAssertEqual(HotkeyBinding.rightControl.rewriteModifier(preferring: .control), .option)
+        XCTAssertEqual(HotkeyBinding.rightOption.rewriteModifier(preferring: .option), .control)
+        XCTAssertEqual(HotkeyBinding.leftCommand.rewriteModifier(preferring: .command), .control)
+        XCTAssertEqual(HotkeyBinding.rightCommand.rewriteModifier(preferring: .shift), .shift)
     }
 
     // MARK: - the pill
@@ -212,7 +220,7 @@ final class RewriteStyleTests: XCTestCase {
     }
 
     func testAShortPickerKeepsItsWords() {
-        let pick = RewritePick(styles: RewriteStyle.builtIn, lastStyleID: "auto")
+        let pick = RewritePick(styles: RewriteStyle.builtIn, defaultStyleID: "auto")
         let layout = HUDLayoutEngine.layout(for: .choices(pick.buttons), screenWidth: 1_440)
         XCTAssertEqual(layout.choiceTitleWidth, HUDLayoutEngine.longestChoiceTitle)
     }

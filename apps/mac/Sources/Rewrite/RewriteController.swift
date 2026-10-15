@@ -9,12 +9,15 @@ struct RewriteConnection {
 }
 
 /// the rewrite's half of a take (fn+⌃), from the cleaned words to the words
-/// that are pasted: the picker on the pill, then the model.
+/// that are pasted: the default style, or the picker on the pill, then the
+/// model.
 ///
-/// the model is asked for the style the picker starts on the moment the
-/// picker goes up, so the usual answer — the style you used last, or no
-/// pick at all — is already on its way while you look. another pick asks
-/// again and lets the first go.
+/// the picker stays down unless you move the pointer during the take: a
+/// hand left on the keys wants the default style, and a hand that went to
+/// the mouse is reaching for a choice. either way the model is asked for
+/// the default the moment the words arrive, so the usual answer is already
+/// on its way while you look. another pick asks again and lets the first
+/// go.
 ///
 /// every way it ends has words in it: the model's, or yours as said with a
 /// reason the pill gives after they land. only esc ends it with none, and
@@ -26,6 +29,11 @@ final class RewriteController {
     /// how long the model has to answer once the style is picked. a
     /// rewrite is a sentence or a paragraph; past this, something is wrong.
     static let answerDeadline: Duration = .seconds(20)
+
+    /// how far the pointer has to travel during a take, in points, before
+    /// the picker comes up: a nudge of the trackpad while you talk is not
+    /// a reach for the mouse.
+    static let pointerTravelForPicker: CGFloat = 12
 
     /// the pill: the picker, the wait, or nil when it is over.
     var showPill: ((HUDRewritePill?) -> Void)?
@@ -49,6 +57,8 @@ final class RewriteController {
     private var pickContinuation: CheckedContinuation<RewriteChoice?, Never>?
     private var countdown: PillCountdown?
     private var pickTimer: Task<Void, Never>?
+    private var pointerMonitors: [Any] = []
+    private var pointerTravel: CGFloat = 0
 
     init(
         settings: RewriteSettings,
@@ -63,8 +73,58 @@ final class RewriteController {
         }
     }
 
+    /// a rewrite take has started recording: from here until its words
+    /// arrive, the pointer moving is a vote for the picker.
+    func takeBegan() {
+        stopWatchingPointer()
+        pointerTravel = 0
+        let mask: NSEvent.EventTypeMask = [
+            .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged,
+        ]
+        if let monitor = NSEvent.addGlobalMonitorForEvents(
+            matching: mask,
+            handler: { [weak self] event in
+                self?.pointerMoved(event)
+            }
+        ) {
+            pointerMonitors.append(monitor)
+        }
+        if let monitor = NSEvent.addLocalMonitorForEvents(
+            matching: mask,
+            handler: { [weak self] event in
+                self?.pointerMoved(event)
+                return event
+            }
+        ) {
+            pointerMonitors.append(monitor)
+        }
+    }
+
+    /// whether the take that just ended wants the picker.
+    var pointerAskedForPicker: Bool {
+        pointerTravel >= Self.pointerTravelForPicker
+    }
+
+    private func pointerMoved(_ event: NSEvent) {
+        pointerTravel += hypot(event.deltaX, event.deltaY)
+        // the answer is in: nothing more to learn from this take.
+        if pointerAskedForPicker {
+            stopWatchingPointer()
+        }
+    }
+
+    private func stopWatchingPointer() {
+        for monitor in pointerMonitors {
+            NSEvent.removeMonitor(monitor)
+        }
+        pointerMonitors.removeAll()
+    }
+
     /// the machine's `rewrite`: the cleaned words in, what to paste out.
     func run(_ text: String) async -> RewriteOutcome {
+        let offersPicker = pointerAskedForPicker
+        stopWatchingPointer()
+        pointerTravel = 0
         defer {
             showPill?(nil)
         }
@@ -78,27 +138,26 @@ final class RewriteController {
 
         let pick = RewritePick(
             styles: settings.pickerStyles,
-            lastStyleID: settings.lastStyleID
+            defaultStyleID: settings.defaultStyleID
         )
         var asked = (
             style: pick.startingStyle,
             answer: ask(connection, text, pick.startingStyle)
         )
 
-        let choice = await choose(from: pick)
-        let style: RewriteStyle
-        switch choice {
-        case nil, .asSaid:
-            asked.answer.cancel()
-            return .asSaid
-        case let .style(picked):
-            style = picked
-        }
-
-        settings.lastStyleID = style.id
-        if style.id != asked.style.id {
-            asked.answer.cancel()
-            asked = (style, ask(connection, text, style))
+        var style = pick.startingStyle
+        if offersPicker {
+            switch await choose(from: pick) {
+            case nil, .asSaid:
+                asked.answer.cancel()
+                return .asSaid
+            case let .style(picked):
+                style = picked
+            }
+            if style.id != asked.style.id {
+                asked.answer.cancel()
+                asked = (style, ask(connection, text, style))
+            }
         }
         showPill?(.working("rewriting · \(style.name)…"))
 

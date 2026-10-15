@@ -47,11 +47,21 @@ final class RewriteSettings: ObservableObject {
         }
     }
 
-    /// the style the picker starts on, and takes when nothing is picked.
-    @Published var lastStyleID: String {
+    /// the style a take gets when you don't reach for the picker, and the
+    /// one the picker starts on and takes when its time runs out. chosen
+    /// here, never by the last pick: a hidden picker must not move it.
+    @Published var defaultStyleID: String {
         didSet {
-            guard lastStyleID != oldValue else { return }
-            userDefaults.set(lastStyleID, forKey: Self.lastStyleKey)
+            guard defaultStyleID != oldValue else { return }
+            userDefaults.set(defaultStyleID, forKey: Self.defaultStyleKey)
+        }
+    }
+
+    /// the second key held with the dictation key (fn+⌃).
+    @Published var modifier: RewriteModifier {
+        didSet {
+            guard modifier != oldValue else { return }
+            userDefaults.set(modifier.rawValue, forKey: Self.modifierKey)
         }
     }
 
@@ -61,7 +71,8 @@ final class RewriteSettings: ObservableObject {
     private static let providerKey = "AndrewDictate.rewrite.provider"
     private static let modelsKey = "AndrewDictate.rewrite.models"
     private static let customStylesKey = "AndrewDictate.rewrite.customStyles"
-    private static let lastStyleKey = "AndrewDictate.rewrite.lastStyle"
+    private static let defaultStyleKey = "AndrewDictate.rewrite.defaultStyle"
+    private static let modifierKey = "AndrewDictate.rewrite.modifier"
 
     init(userDefaults: UserDefaults = .standard) {
         self.userDefaults = userDefaults
@@ -78,8 +89,10 @@ final class RewriteSettings: ObservableObject {
         customStyles = userDefaults.data(forKey: Self.customStylesKey)
             .flatMap { try? JSONDecoder().decode([RewriteStyle].self, from: $0) }
             ?? []
-        lastStyleID = userDefaults.string(forKey: Self.lastStyleKey)
+        defaultStyleID = userDefaults.string(forKey: Self.defaultStyleKey)
             ?? RewriteStyle.auto.id
+        modifier = userDefaults.string(forKey: Self.modifierKey)
+            .flatMap(RewriteModifier.init(rawValue:)) ?? .control
     }
 
     func model(for provider: RewriteProvider) -> String {
@@ -120,8 +133,8 @@ final class RewriteSettings: ObservableObject {
 
     func remove(_ style: RewriteStyle) {
         customStyles.removeAll { $0.id == style.id }
-        if lastStyleID == style.id {
-            lastStyleID = RewriteStyle.auto.id
+        if defaultStyleID == style.id {
+            defaultStyleID = RewriteStyle.auto.id
         }
     }
 }

@@ -933,19 +933,24 @@ final class UtteranceMachine {
         keyCancelled()
     }
 
-    /// whether `esc` was ours to take: only while there is something to
-    /// throw away.
     /// the rewrite modifier is down. it counts for the take that is
     /// recording, whenever in the take it went down, and for nothing else.
-    func rewriteModifierPressed() {
+    /// true the first time it makes this take a rewrite: the moment to
+    /// start listening for the pointer.
+    @discardableResult
+    func rewriteModifierPressed() -> Bool {
         guard state == .recording,
               rewrite != nil,
-              micTurn?.isEnding == false else {
-            return
+              micTurn?.isEnding == false,
+              !wantsRewrite else {
+            return false
         }
         wantsRewrite = true
+        return true
     }
 
+    /// whether `esc` was ours to take: only while there is something to
+    /// throw away.
     func escape() -> Bool {
         guard state != .idle, state != .prewarming else {
             return false

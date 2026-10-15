@@ -1,9 +1,9 @@
 import AppKit
 import SwiftUI
 
-/// settings › rewrite: fn+⌃. whether it is on, who rewrites, with what
-/// model, and the styles on the picker. the one tab whose words can leave
-/// the mac, so it says so where the switch is.
+/// settings › rewrite: fn+⌃. whether it is on, the key that asks for it,
+/// who rewrites, with what model, and the styles. the one tab whose words
+/// can leave the mac, so it says so at the foot.
 struct RewriteSettingsView: View {
     @ObservedObject var settings: RewriteSettings
     @ObservedObject var accounts: RewriteAccounts
@@ -14,9 +14,18 @@ struct RewriteSettingsView: View {
     @State private var modelDraft = ""
     @State private var editing: RewriteStyle?
     @State private var pendingRemoval: RewriteStyle?
+    @State private var hoveredStyleID: String?
+
+    /// the right-hand column every row's control sits in, so the picker,
+    /// the key field and the model line up down the tab.
+    private static let controlWidth: CGFloat = 230
+
+    private var modifier: RewriteModifier {
+        dictationKey.rewriteModifier(preferring: settings.modifier)
+    }
 
     private var gesture: String {
-        "\(dictationKey.displayName)+\(dictationKey.rewriteModifier.symbol)"
+        "\(dictationKey.displayName)+\(modifier.symbol)"
     }
 
     var body: some View {
@@ -24,9 +33,11 @@ struct RewriteSettingsView: View {
             VStack(alignment: .leading, spacing: 13) {
                 SettingsToggleRow(
                     "rewrite with \(gesture)",
-                    explanation: "hold \(gesture), talk, let go. pick a style on the pill and an ai rewrites it before it lands. plain \(dictationKey.displayName) never leaves this mac.",
+                    explanation: "hold \(gesture), talk, let go, and an ai rewrites it before it lands. plain \(dictationKey.displayName) never leaves this mac.",
                     isOn: $settings.isEnabled
                 )
+                divider
+                keyRow
                 divider
                 providerRow
                 if settings.provider.needsModelChoice {
@@ -36,10 +47,7 @@ struct RewriteSettingsView: View {
                 divider
                 stylesSection
                 divider
-                Text(privacyLine)
-                    .font(BrandUI.bodyFont)
-                    .foregroundStyle(BrandUI.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                privacyFootnote
             }
             .padding(.horizontal, 24)
             .padding(.top, 18)
@@ -91,25 +99,75 @@ struct RewriteSettingsView: View {
             .accessibilityHidden(true)
     }
 
-    private var privacyLine: String {
-        switch settings.provider {
-        case .apple:
-            "apple's model runs on this mac: a rewrite never leaves it."
-        default:
-            "a rewrite sends what you said, and nothing else, to \(settings.provider.displayName). keys and sign-ins are kept in your keychain."
+    private func textButton(
+        _ title: String,
+        quiet: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(title, action: action)
+            .buttonStyle(.plain)
+            .font(BrandUI.bodyFont)
+            .foregroundStyle(quiet ? BrandUI.textSecondary : BrandUI.gold)
+    }
+
+    // MARK: - the key
+
+    /// the dictation key is set on the dictation tab; this row only adds
+    /// the second key to it, and says which one is in force when the one
+    /// you chose is the dictation key's own kind.
+    private var keyRow: some View {
+        HStack(alignment: .top, spacing: 16) {
+            SettingsRowLabel(
+                "rewrite key",
+                explanation: modifier == settings.modifier
+                    ? "held with \(dictationKey.displayName), your dictation key. that one is set on the dictation tab."
+                    : "\(settings.modifier.symbol) is your dictation key's own, so \(modifier.symbol) stands in. the dictation key is set on the dictation tab."
+            )
+            Spacer(minLength: 8)
+            HStack(spacing: 6) {
+                KeyChip(dictationKey.displayName)
+                Text("+")
+                    .font(BrandUI.valueFont)
+                    .foregroundStyle(BrandUI.textSecondary)
+                Menu {
+                    ForEach(RewriteModifier.allCases) { option in
+                        Button {
+                            settings.modifier = option
+                        } label: {
+                            if option == modifier {
+                                Label(option.displayName, systemImage: "checkmark")
+                            } else {
+                                Text(option.displayName)
+                            }
+                        }
+                        .disabled(!option.isFree(alongside: dictationKey))
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        KeyChip(modifier.displayName)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(BrandUI.textSecondary)
+                    }
+                }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .fixedSize()
+                .accessibilityLabel("rewrite key, held with \(dictationKey.displayName)")
+            }
         }
     }
 
     // MARK: - who rewrites
 
     private var providerRow: some View {
-        HStack(alignment: .top, spacing: 16) {
-            SettingsRowLabel(
-                "who rewrites it",
-                explanation: settings.provider.setupExplanation
-            )
-            Spacer(minLength: 8)
-            VStack(alignment: .trailing, spacing: 8) {
+        VStack(alignment: .trailing, spacing: 10) {
+            HStack(alignment: .top, spacing: 16) {
+                SettingsRowLabel(
+                    "who rewrites it",
+                    explanation: settings.provider.setupExplanation
+                )
+                Spacer(minLength: 8)
                 Picker("", selection: $settings.provider) {
                     ForEach(RewriteProvider.allCases) { provider in
                         Text(provider.displayName).tag(provider)
@@ -117,11 +175,11 @@ struct RewriteSettingsView: View {
                 }
                 .labelsHidden()
                 .brandMenuStyle()
-                .frame(width: 220)
+                .frame(width: Self.controlWidth)
                 .accessibilityLabel("who rewrites it")
-
-                accountControls
             }
+            accountControls
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }
     }
 
@@ -130,39 +188,48 @@ struct RewriteSettingsView: View {
         let provider = settings.provider
         switch accounts.status(of: provider) {
         case let .ready(detail):
-            HStack(spacing: 10) {
-                Text(detail ?? "ready")
-                    .font(BrandUI.valueFont)
-                    .foregroundStyle(BrandUI.goldPale)
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(BrandUI.gold)
+                    .accessibilityHidden(true)
+                Text(readyLine(provider, detail: detail))
+                    .font(BrandUI.bodyFont)
+                    .foregroundStyle(BrandUI.textSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
                 if provider.authentication != .none {
-                    Button(provider.authentication == .apiKey ? "remove key" : "sign out") {
+                    Text("·")
+                        .foregroundStyle(BrandUI.textSecondary)
+                        .accessibilityHidden(true)
+                    textButton(provider.authentication == .apiKey ? "remove key" : "sign out") {
                         accounts.signOut(provider)
                         models = []
                     }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(BrandUI.gold)
                 }
             }
         case let .working(message):
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 ProgressView().controlSize(.mini)
                 Text(message)
                     .font(BrandUI.bodyFont)
                     .foregroundStyle(BrandUI.textSecondary)
-                Button("cancel") { accounts.cancelSignIn() }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(BrandUI.gold)
+                Text("·")
+                    .foregroundStyle(BrandUI.textSecondary)
+                    .accessibilityHidden(true)
+                textButton("cancel") { accounts.cancelSignIn() }
             }
         case let .unavailable(reason):
             Text(reason)
                 .font(BrandUI.bodyFont)
                 .foregroundStyle(BrandUI.attention)
         case let .needsSetup(problem):
-            VStack(alignment: .trailing, spacing: 6) {
+            VStack(alignment: .trailing, spacing: 8) {
                 if let problem {
                     Text(problem)
                         .font(BrandUI.bodyFont)
                         .foregroundStyle(BrandUI.attention)
+                        .multilineTextAlignment(.trailing)
                 }
                 if provider.canSignIn {
                     Button("sign in with \(provider.signInName)…") {
@@ -171,30 +238,38 @@ struct RewriteSettingsView: View {
                             loadModels()
                         }
                     }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(BrandUI.gold)
+                    .buttonStyle(.borderedProminent)
+                    .tint(BrandUI.goldDeep)
+                    .frame(width: Self.controlWidth, alignment: .trailing)
                 }
                 if provider.acceptsKey {
                     HStack(spacing: 8) {
-                        SecureField(provider.canSignIn ? "or paste a key" : "paste a key", text: $pastedKey)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 200)
-                            .onSubmit(saveKey)
-                        Button("save", action: saveKey)
-                            .buttonStyle(.plain)
-                            .foregroundStyle(BrandUI.gold)
+                        SecureField(
+                            provider.canSignIn ? "or paste a key" : "paste a key",
+                            text: $pastedKey
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit(saveKey)
+                        textButton("save", action: saveKey)
                             .disabled(pastedKey.trimmingCharacters(in: .whitespaces).isEmpty)
                     }
-                    if let keyPage = provider.keyPage {
-                        Button("get a key ↗") {
-                            NSWorkspace.shared.open(keyPage)
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(BrandUI.textSecondary)
+                    .frame(width: Self.controlWidth)
+                }
+                if let keyPage = provider.keyPage {
+                    textButton("get a key ↗", quiet: true) {
+                        NSWorkspace.shared.open(keyPage)
                     }
                 }
             }
         }
+    }
+
+    /// "signed in as you@example.com", "key ending 3f9a", "ready".
+    private func readyLine(_ provider: RewriteProvider, detail: String?) -> String {
+        guard let detail else {
+            return "ready"
+        }
+        return provider.authentication == .signIn ? "signed in as \(detail)" : detail
     }
 
     private func saveKey() {
@@ -214,30 +289,37 @@ struct RewriteSettingsView: View {
                 explanation: "a small, fast model is plenty: a rewrite is a sentence or two. \(settings.provider.defaultModel) unless you pick another."
             )
             Spacer(minLength: 8)
-            HStack(spacing: 6) {
-                TextField(settings.provider.defaultModel, text: $modelDraft)
-                    .textFieldStyle(.roundedBorder)
-                    .font(BrandUI.valueFont)
-                    .frame(width: 220)
-                    .onSubmit {
-                        settings.setModel(modelDraft, for: settings.provider)
-                    }
-                    .onChange(of: modelDraft) {
-                        settings.setModel(modelDraft, for: settings.provider)
-                    }
-                if !models.isEmpty {
-                    Menu {
-                        ForEach(models, id: \.self) { model in
-                            Button(model) { modelDraft = model }
-                        }
-                    } label: {
-                        Image(systemName: "chevron.down")
-                    }
-                    .menuStyle(.borderlessButton)
-                    .frame(width: 24)
-                    .accessibilityLabel("models \(settings.provider.displayName) offers")
+            TextField(settings.provider.defaultModel, text: $modelDraft)
+                .textFieldStyle(.roundedBorder)
+                .font(BrandUI.valueFont)
+                .frame(width: Self.controlWidth)
+                .onSubmit {
+                    settings.setModel(modelDraft, for: settings.provider)
                 }
-            }
+                .onChange(of: modelDraft) {
+                    settings.setModel(modelDraft, for: settings.provider)
+                }
+                .overlay(alignment: .trailing) {
+                    if !models.isEmpty {
+                        Menu {
+                            ForEach(models, id: \.self) { model in
+                                Button(model) { modelDraft = model }
+                            }
+                        } label: {
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(BrandUI.textSecondary)
+                                .frame(width: 22, height: 18)
+                                .contentShape(Rectangle())
+                        }
+                        .menuStyle(.button)
+                        .menuIndicator(.hidden)
+                        .buttonStyle(.plain)
+                        .fixedSize()
+                        .padding(.trailing, 4)
+                        .accessibilityLabel("models \(settings.provider.displayName) offers")
+                    }
+                }
         }
     }
 
@@ -254,69 +336,112 @@ struct RewriteSettingsView: View {
     // MARK: - styles
 
     private var stylesSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 16) {
                 SettingsRowLabel(
                     "styles",
-                    explanation: "the buttons on the pill, in order, each on its digit key. 0 pastes it as said. nothing picked in five seconds takes the one you used last."
+                    explanation: "every take gets the default. move the pointer while you talk and the pill offers them all, each on its number key."
                 )
                 Spacer(minLength: 8)
-                Button("new style…") {
+                textButton("new style…") {
                     editing = .custom(name: "")
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(BrandUI.gold)
                 .disabled(!settings.canAddStyle)
             }
 
             VStack(spacing: 0) {
                 ForEach(Array(settings.pickerStyles.enumerated()), id: \.element.id) { index, style in
                     styleRow(style, key: index + 1)
-                    if index < settings.pickerStyles.count - 1 {
-                        divider.opacity(0.6)
-                    }
+                    divider.padding(.leading, 52)
                 }
+                asSaidRow
             }
-            .padding(.horizontal, 12)
-            .background(
+            .background {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(BrandUI.black.opacity(0.22))
-            )
+                    .fill(BrandUI.cardBg)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(BrandUI.hairline, lineWidth: 1)
+            }
         }
     }
 
     private func styleRow(_ style: RewriteStyle, key: Int) -> some View {
-        HStack(spacing: 10) {
-            Text("\(key)")
-                .font(BrandUI.valueFont)
-                .foregroundStyle(BrandUI.textSecondary)
-                .frame(width: 14)
+        let isDefault = style.id == settings.defaultStyleID
+        let isHovered = hoveredStyleID == style.id
+        return HStack(spacing: 12) {
+            KeyChip("\(key)")
+                .frame(width: 26)
+                .accessibilityLabel("key \(key)")
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(style.name)
-                        .font(BrandUI.bodyFont.weight(.medium))
-                    if style.id == settings.lastStyleID {
-                        Text("default")
-                            .font(BrandUI.valueFont)
-                            .foregroundStyle(BrandUI.gold)
-                    }
-                }
+                Text(style.name)
+                    .font(BrandUI.bodyFont.weight(.medium))
+                    .foregroundStyle(BrandUI.textPrimary)
                 Text(summary(of: style))
                     .font(BrandUI.bodyFont)
                     .foregroundStyle(BrandUI.textSecondary)
                     .lineLimit(1)
+                    .truncationMode(.tail)
             }
-            Spacer()
-            if !style.isBuiltIn {
-                Button("edit") { editing = style }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(BrandUI.gold)
-                Button("remove") { pendingRemoval = style }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(BrandUI.textSecondary)
+            Spacer(minLength: 12)
+            HStack(spacing: 14) {
+                if !style.isBuiltIn {
+                    textButton("edit", quiet: true) { editing = style }
+                    textButton("remove", quiet: true) { pendingRemoval = style }
+                }
+                if isDefault {
+                    defaultBadge
+                } else {
+                    // on the row under the pointer only: a column of
+                    // "make default" would shout over the names.
+                    textButton("make default") {
+                        settings.defaultStyleID = style.id
+                    }
+                    .opacity(isHovered ? 1 : 0)
+                }
             }
         }
-        .padding(.vertical, 8)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .contentShape(Rectangle())
+        .onHover { over in
+            if over {
+                hoveredStyleID = style.id
+            } else if hoveredStyleID == style.id {
+                hoveredStyleID = nil
+            }
+        }
+    }
+
+    /// the last button on the pill: no model at all.
+    private var asSaidRow: some View {
+        HStack(spacing: 12) {
+            KeyChip("\(RewritePick.asSaidKey)")
+                .frame(width: 26)
+                .accessibilityLabel("key \(RewritePick.asSaidKey)")
+            VStack(alignment: .leading, spacing: 2) {
+                Text("as said")
+                    .font(BrandUI.bodyFont.weight(.medium))
+                    .foregroundStyle(BrandUI.textPrimary)
+                Text("on the picker only: pastes it the way you said it")
+                    .font(BrandUI.bodyFont)
+                    .foregroundStyle(BrandUI.textSecondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 12)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+    }
+
+    private var defaultBadge: some View {
+        Text("default")
+            .font(BrandUI.sectionLabelFont)
+            .foregroundStyle(BrandUI.windowBg)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(BrandUI.gold))
     }
 
     private func summary(of style: RewriteStyle) -> String {
@@ -324,6 +449,30 @@ struct RewriteSettingsView: View {
             ?? "fits it to what you said"
         let notes = style.notes.trimmingCharacters(in: .whitespacesAndNewlines)
         return notes.isEmpty ? tone : "\(tone) · \(notes)"
+    }
+
+    // MARK: - privacy
+
+    private var privacyFootnote: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "lock")
+                .font(.caption)
+                .foregroundStyle(BrandUI.textSecondary)
+                .accessibilityHidden(true)
+            Text(privacyLine)
+                .font(.caption)
+                .foregroundStyle(BrandUI.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var privacyLine: String {
+        switch settings.provider {
+        case .apple:
+            "apple's model runs on this mac: a rewrite never leaves it."
+        default:
+            "a rewrite sends what you said, and nothing else, to \(settings.provider.shortName). keys and sign-ins stay in your keychain."
+        }
     }
 }
 
