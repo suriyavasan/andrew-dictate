@@ -608,6 +608,11 @@ final class DictationCoordinator: ObservableObject {
         resettingHotkey { hotkeyMonitor.rebind(to: binding) }
     }
 
+    /// the meetings window, on `select` if given. the window itself is
+    /// phase c's; until then this is the seam the panel calls.
+    func openMeetings(select: URL? = nil) {
+        // MEETINGS-WINDOW: filled in by the meetings window.
+    }
 
     func openAbout() {
         let controller: AboutWindowController

@@ -65,6 +65,24 @@ final class RewriteSettings: ObservableObject {
         }
     }
 
+    /// meetings are summarized by the same provider when they end. on by
+    /// default: a summary is what a meeting is recorded for, and with no
+    /// provider set up it asks for nothing.
+    @Published var summariesEnabled: Bool {
+        didSet {
+            guard summariesEnabled != oldValue else { return }
+            userDefaults.set(summariesEnabled, forKey: Self.summariesKey)
+        }
+    }
+
+    /// the template a meeting is summarized with unless it has its own.
+    @Published var defaultTemplateID: String {
+        didSet {
+            guard defaultTemplateID != oldValue else { return }
+            userDefaults.set(defaultTemplateID, forKey: Self.templateKey)
+        }
+    }
+
     private let userDefaults: UserDefaults
 
     private static let enabledKey = "AndrewDictate.rewrite.enabled"
@@ -73,6 +91,8 @@ final class RewriteSettings: ObservableObject {
     private static let customStylesKey = "AndrewDictate.rewrite.customStyles"
     private static let defaultStyleKey = "AndrewDictate.rewrite.defaultStyle"
     private static let modifierKey = "AndrewDictate.rewrite.modifier"
+    private static let summariesKey = "AndrewDictate.ai.summaries"
+    private static let templateKey = "AndrewDictate.ai.template"
 
     init(userDefaults: UserDefaults = .standard) {
         self.userDefaults = userDefaults
@@ -93,6 +113,9 @@ final class RewriteSettings: ObservableObject {
             ?? RewriteStyle.auto.id
         modifier = userDefaults.string(forKey: Self.modifierKey)
             .flatMap(RewriteModifier.init(rawValue:)) ?? .control
+        summariesEnabled = userDefaults.object(forKey: Self.summariesKey) as? Bool ?? true
+        defaultTemplateID = userDefaults.string(forKey: Self.templateKey)
+            ?? MeetingTemplate.auto.id
     }
 
     func model(for provider: RewriteProvider) -> String {
