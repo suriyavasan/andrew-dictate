@@ -18,12 +18,17 @@ struct OpenAICompatibleClient: RewriteClient {
         self.send = send
     }
 
-    func rewrite(_ prompt: RewritePrompt, model: String) async throws -> String {
+    func complete(
+        _ prompt: RewritePrompt,
+        model: String,
+        timeout: TimeInterval
+    ) async throws -> String {
         guard let request = Self.request(
             provider: provider,
             key: key,
             prompt: prompt,
-            model: model
+            model: model,
+            timeout: timeout
         ) else {
             throw RewriteFailure.notSignedIn(provider)
         }
@@ -81,7 +86,8 @@ struct OpenAICompatibleClient: RewriteClient {
         provider: RewriteProvider,
         key: String,
         prompt: RewritePrompt,
-        model: String
+        model: String,
+        timeout: TimeInterval = RewriteHTTP.rewriteTimeout
     ) -> URLRequest? {
         guard let base = baseURL(for: provider) else {
             return nil
@@ -101,7 +107,7 @@ struct OpenAICompatibleClient: RewriteClient {
             base.appending(path: "chat/completions"),
             body: body,
             bearer: key,
-            timeout: RewriteHTTP.rewriteTimeout
+            timeout: timeout
         )
         for (name, value) in attributionHeaders(for: provider) {
             request.setValue(value, forHTTPHeaderField: name)

@@ -19,6 +19,11 @@ enum RewriteHTTP {
     /// provider that is not going to answer in time to be useful.
     static let rewriteTimeout: TimeInterval = 20
 
+    /// a meeting's summary reads an hour of talk and writes a page, with
+    /// nobody waiting on the paste: three minutes without a byte is a
+    /// provider that is not going to answer.
+    static let summaryTimeout: TimeInterval = 180
+
     /// sign-in and model lists are not on the paste path, so they get
     /// longer.
     static let setupTimeout: TimeInterval = 30

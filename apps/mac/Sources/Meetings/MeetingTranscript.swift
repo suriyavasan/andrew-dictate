@@ -45,6 +45,14 @@ struct MeetingTranscript: Equatable, Sendable {
     /// passed it: the body says so, so an empty page is not taken for a
     /// transcript that lost everything.
     var nobodySpoke = false
+    /// What the meeting is called, once it has been named: by the model or by
+    /// you. nil leaves the line out, and the app says "zoom call" instead.
+    var title: String? = nil
+    /// The summary template the file's summary block was made with. Only
+    /// carried so a rewrite of the file does not forget it.
+    var template: String? = nil
+    /// How many times the meeting was recorded into; only written above 1.
+    var sessions: Int? = nil
     let turns: [MeetingTurn]
 
     /// SPEC §4 extended: a transcript with holes says so, in its front matter
@@ -87,7 +95,7 @@ enum MeetingTranscriptFile {
     private static let noteText = """
     # meeting transcripts
 
-    written by andrew dictate. one file per meeting, not changed after it is written, unless you have the meeting transcribed again: then the file is replaced where it is, and a hook is run for it again with `again: true`.
+    written by andrew dictate. one file per meeting, not changed after it is written, unless you have the meeting transcribed again (the file is replaced where it is, and a hook is run for it again with `again: true`), record into it again, rename it, or have it summarized.
 
     ## where things are
 
@@ -106,10 +114,19 @@ enum MeetingTranscriptFile {
     - `complete`: false if any audio was lost or the transcript does not cover what was said. `reason` says why.
     - `gaps`: stretches of lost audio, as [start, end] in seconds from the start.
     - `recovered`: true if the app wrote this at a later launch, after a crash.
+    - `title`: what the meeting is called, when it has a name. the file name never changes.
+    - `sessions`: how many times the meeting was recorded into. only there above 1.
+    - `template`: the summary template the notes were made with.
+
+    ## the summary
+
+    when summaries are on, notes written by an ai sit between `<!-- andrew:summary -->` and `<!-- /andrew:summary -->` right after the top of the file. they are made again whenever the transcript changes.
 
     ## the rest
 
     one paragraph per speaker turn: `[hh:mm:ss] speaker: text`. times count from the start of the meeting.
+
+    a meeting recorded into again adds a session at the end: a `<!-- andrew:session … -->` line, a heading with its date, and its own turns, whose times start again at 00:00:00. `duration_s`, `words`, `speakers`, `gaps` and `ended` cover all of them, and a gap's times count from the start of its own session.
 
     """
 
@@ -161,17 +178,24 @@ enum MeetingTranscriptFile {
         _ transcript: MeetingTranscript,
         timeZone: TimeZone = .current
     ) -> String {
-        var lines: [String] = [
-            "---",
-            "app: \(transcript.app)",
+        var lines: [String] = ["---", "app: \(transcript.app)"]
+        if let title = oneLine(transcript.title, limit: titleLimit) {
+            lines.append("title: \(title)")
+        }
+        lines.append(contentsOf: [
             "started: \(iso8601(timeZone).string(from: transcript.started))",
             "ended: \(iso8601(timeZone).string(from: ended(transcript)))",
             "duration_s: \(seconds(transcript.duration))",
+        ])
+        if let sessions = transcript.sessions, sessions > 1 {
+            lines.append("sessions: \(sessions)")
+        }
+        lines.append(contentsOf: [
             "engine: \(transcript.engine)",
             "speakers: [\(speakers(of: transcript).joined(separator: ", "))]",
             "words: \(wordCount(of: transcript))",
             "complete: \(transcript.complete)",
-        ]
+        ])
         if !transcript.complete {
             lines.append("reason: \(transcript.reason ?? lostAudio(transcript.gaps.count))")
         }
@@ -185,9 +209,22 @@ enum MeetingTranscriptFile {
             }
         }
         lines.append("recovered: \(transcript.recovered)")
+        if let template = oneLine(transcript.template, limit: templateLimit) {
+            lines.append("template: \(template)")
+        }
         lines.append("---")
         lines.append("")
+        lines.append(contentsOf: bodyLines(of: transcript))
+        // every block above ends with an empty line, so the join already
+        // closes the file with one newline.
+        return lines.joined(separator: "\n")
+    }
 
+    /// What follows the front matter, or follows a session's heading: where
+    /// the holes are, whether anyone spoke, and the turns. Every block ends
+    /// with an empty line.
+    private static func bodyLines(of transcript: MeetingTranscript) -> [String] {
+        var lines: [String] = []
         if !transcript.gaps.isEmpty {
             let count = transcript.gaps.count
             let spans = transcript.gaps
@@ -207,9 +244,7 @@ enum MeetingTranscriptFile {
                 "[\(paragraph.at.stamp)] \(paragraph.speaker.label): \(paragraph.text)")
             lines.append("")
         }
-        // every block above ends with an empty line, so the join already
-        // closes the file with one newline.
-        return lines.joined(separator: "\n")
+        return lines
     }
 
     /// The file is chmod 0600 and the two folders the app makes for it 0700.
@@ -303,7 +338,15 @@ enum MeetingTranscriptFile {
         guard fileManager.fileExists(atPath: url.path) else {
             throw Failure.gone(url)
         }
-        try markdown(transcript, timeZone: timeZone)
+        // the new reading is of the same meeting: what it is called, and
+        // which template its notes were made with, are not the audio's to
+        // forget. the summary block itself goes — it was of the old words.
+        var kept = transcript
+        if let old = try? frontMatter(of: url) {
+            kept.title = kept.title ?? old.title
+            kept.template = kept.template ?? old.template
+        }
+        try markdown(kept, timeZone: timeZone)
             .write(to: url, atomically: true, encoding: .utf8)
         // `try?` for the reason `write` gives: the new file is already in
         // its place.
@@ -343,10 +386,26 @@ enum MeetingTranscriptFile {
         let complete: Bool
         /// How many words the file says it has.
         let words: Int
+        /// What the meeting is called, when it has been named.
+        let title: String?
+        /// The template id the file's summary was made with.
+        let template: String?
+        /// How many times the meeting was recorded into: 1 when the file
+        /// does not say, as a file from before sessions was one.
+        let sessions: Int
+        let engine: String
     }
 
     static func header(of url: URL) throws -> Header {
-        let front = try frontMatter(of: url)
+        try header(from: frontMatter(of: url), url: url)
+    }
+
+    /// The same, from text already read.
+    static func header(parsing text: String, url: URL) throws -> Header {
+        try header(from: frontMatter(parsing: text, url: url), url: url)
+    }
+
+    private static func header(from front: FrontMatter, url: URL) throws -> Header {
         // a gap line is `- [41.2, 63.0]`. one that is not is a file whose
         // holes this build cannot say, and a rewrite would be guessing.
         let gaps = try front.gapLines.map { line -> MeetingSession.Gap in
@@ -366,7 +425,11 @@ enum MeetingTranscriptFile {
             gaps: gaps,
             recovered: front.recovered,
             complete: front.complete,
-            words: front.words)
+            words: front.words,
+            title: front.title,
+            template: front.template,
+            sessions: front.sessions,
+            engine: front.engine)
     }
 
     /// The top of a file, read once for both of the ways it is read: the
@@ -380,10 +443,18 @@ enum MeetingTranscriptFile {
         let recovered: Bool
         let words: Int
         let gapLines: [String]
+        let title: String?
+        let template: String?
+        let sessions: Int
+        let engine: String
     }
 
     private static func frontMatter(of url: URL) throws -> FrontMatter {
-        let text = try String(contentsOf: url, encoding: .utf8)
+        try frontMatter(
+            parsing: String(contentsOf: url, encoding: .utf8), url: url)
+    }
+
+    private static func frontMatter(parsing text: String, url: URL) throws -> FrontMatter {
         var lines = text.components(separatedBy: "\n")[...]
         guard lines.first == "---" else {
             throw Failure.noFrontMatter(url)
@@ -422,7 +493,11 @@ enum MeetingTranscriptFile {
             complete: fields["complete"] == "true",
             recovered: fields["recovered"] == "true",
             words: fields["words"].flatMap { Int($0) } ?? 0,
-            gapLines: gapLines)
+            gapLines: gapLines,
+            title: oneLine(fields["title"], limit: titleLimit),
+            template: oneLine(fields["template"], limit: templateLimit),
+            sessions: max(1, fields["sessions"].flatMap { Int($0) } ?? 1),
+            engine: fields["engine"] ?? "")
     }
 
     /// The offset at the end of an ISO 8601 time, `+05:30` or `Z`.
@@ -459,7 +534,341 @@ enum MeetingTranscriptFile {
         return found.sorted { $0.started > $1.started }
     }
 
+    // MARK: - changing a file
+
+    /// The line pair a summary lives between, right after the front matter.
+    /// Comments, so a markdown viewer shows the notes and nothing around them.
+    static let summaryOpen = "<!-- andrew:summary -->"
+    static let summaryClose = "<!-- /andrew:summary -->"
+    /// Starts a session after the first: the marker carries the exact time,
+    /// the heading beneath it is for the eye.
+    static let sessionMarker = "<!-- andrew:session "
+
+    /// The name the meeting goes by, or none: the line is left out and the
+    /// app falls back to "zoom call". The file's name is its identity — kept
+    /// audio and a spool point at it — so it never changes with the title.
+    static func setTitle(
+        _ title: String?,
+        at url: URL,
+        fileManager: FileManager = .default
+    ) throws {
+        try change(url, fileManager: fileManager) { settingTitle(title, in: $0) }
+    }
+
+    /// The notes for a meeting, with the template that made them, or none
+    /// (nil removes the block and the template line both). Replaces what was
+    /// there; the transcript below is not touched.
+    static func setSummary(
+        _ markdown: String?,
+        template: String?,
+        at url: URL,
+        fileManager: FileManager = .default
+    ) throws {
+        try change(url, fileManager: fileManager) {
+            settingSummary(markdown, template: template, in: $0)
+        }
+    }
+
+    /// Records into a meeting that is already a file: a new session under the
+    /// old ones. The front matter keeps what it was and grows — durations and
+    /// words add up, speakers are the union in order of first appearance,
+    /// `complete` needs every session, and `gaps` keep their own session's
+    /// clock (a gap's seconds count from the start of its session, and the
+    /// session's own blockquote says which). The summary block goes, because
+    /// it was of fewer words; the title and template stay. Returns the same
+    /// url, for the caller that wants to say where it went.
+    @discardableResult
+    static func append(
+        _ transcript: MeetingTranscript,
+        to url: URL,
+        fileManager: FileManager = .default,
+        timeZone: TimeZone = .current
+    ) throws -> URL {
+        guard fileManager.fileExists(atPath: url.path) else {
+            throw Failure.gone(url)
+        }
+        let text = try String(contentsOf: url, encoding: .utf8)
+        let appended = try appending(transcript, to: text, url: url, timeZone: timeZone)
+        try store(appended, at: url, fileManager: fileManager)
+        return url
+    }
+
+    /// Whole or not at all, like every write here: beside it and moved over.
+    /// `try?` on the mode for the reason `write` gives. Nothing here
+    /// serialises two changes to one file: the one place that makes them
+    /// (the summaries) keeps one going per file.
+    private static func change(
+        _ url: URL,
+        fileManager: FileManager,
+        _ transform: (String) -> String?
+    ) throws {
+        guard fileManager.fileExists(atPath: url.path) else {
+            throw Failure.gone(url)
+        }
+        let text = try String(contentsOf: url, encoding: .utf8)
+        guard let changed = transform(text) else {
+            throw Failure.noFrontMatter(url)
+        }
+        try store(changed, at: url, fileManager: fileManager)
+    }
+
+    private static func store(
+        _ text: String,
+        at url: URL,
+        fileManager: FileManager
+    ) throws {
+        try text.write(to: url, atomically: true, encoding: .utf8)
+        try? fileManager.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    // the pure halves of the three, on the file's text. nil when the text
+    // has no front matter to change.
+
+    static func settingTitle(_ title: String?, in text: String) -> String? {
+        guard let parts = split(text) else { return nil }
+        var front = FrontLines(parts.front)
+        front.set(
+            "title",
+            to: oneLine(title, limit: titleLimit).map { ["title: \($0)"] },
+            after: "app")
+        return join(front.lines, parts.body)
+    }
+
+    static func settingSummary(
+        _ markdown: String?,
+        template: String?,
+        in text: String
+    ) -> String? {
+        guard let parts = split(text) else { return nil }
+        let notes = markdown.map(cleanedSummary) ?? ""
+
+        var front = FrontLines(parts.front)
+        let id = notes.isEmpty ? nil : oneLine(template, limit: templateLimit)
+        front.set("template", to: id.map { ["template: \($0)"] }, after: nil)
+
+        var body = droppingSummary(from: parts.body)
+        if !notes.isEmpty {
+            // the empty line that follows the front matter moves to after
+            // the notes.
+            if body.first == "" { body.removeFirst() }
+            body = [summaryOpen] + notes.components(separatedBy: "\n")
+                + [summaryClose, ""] + body
+        }
+        return join(front.lines, body)
+    }
+
+    static func appending(
+        _ transcript: MeetingTranscript,
+        to text: String,
+        url: URL,
+        timeZone: TimeZone
+    ) throws -> String {
+        guard let parts = split(text) else { throw Failure.noFrontMatter(url) }
+        let old = try document(parsing: text, url: url)
+        let header = old.header
+        var front = FrontLines(parts.front)
+
+        let reasons = [
+            header.complete ? nil : front.value(of: "reason"),
+            transcript.complete
+                ? nil : (transcript.reason ?? lostAudio(transcript.gaps.count)),
+        ].compactMap { $0 }
+        var distinct: [String] = []
+        for reason in reasons where !distinct.contains(reason) {
+            distinct.append(reason)
+        }
+        let complete = header.complete && transcript.complete
+
+        var labels = old.speakers
+        for label in speakers(of: transcript) where !labels.contains(label) {
+            labels.append(label)
+        }
+        let total = seconds(header.duration) + seconds(transcript.duration)
+        let words = (front.value(of: "words").flatMap { Int($0) } ?? old.wordCount)
+            + wordCount(of: transcript)
+        let clock = iso8601(timeZone)
+
+        if header.title == nil,
+           let title = oneLine(transcript.title, limit: titleLimit) {
+            front.set("title", to: ["title: \(title)"], after: "app")
+        }
+        front.set(
+            "ended", to: ["ended: \(clock.string(from: ended(transcript)))"],
+            after: "started")
+        front.set("duration_s", to: ["duration_s: \(total)"], after: "ended")
+        front.set(
+            "sessions", to: ["sessions: \(old.sessions.count + 1)"],
+            after: "duration_s")
+        front.set("engine", to: ["engine: \(transcript.engine)"], after: "sessions")
+        front.set(
+            "speakers", to: ["speakers: [\(labels.joined(separator: ", "))]"],
+            after: "engine")
+        front.set("words", to: ["words: \(words)"], after: "speakers")
+        front.set("complete", to: ["complete: \(complete)"], after: "words")
+        front.set(
+            "reason",
+            to: complete ? nil : [
+                "reason: " + (distinct.isEmpty
+                    ? lostAudio((header.gaps + transcript.gaps).count)
+                    : distinct.joined(separator: "; ")),
+            ],
+            after: "complete")
+        let gaps = header.gaps + transcript.gaps
+        front.set(
+            "gaps",
+            to: gaps.isEmpty
+                ? ["gaps: []"]
+                : ["gaps:"] + gaps.map {
+                    "- [\(oneDecimal($0.began)), \(oneDecimal($0.ended))]"
+                },
+            after: "reason")
+        front.set(
+            "recovered",
+            to: ["recovered: \(header.recovered || transcript.recovered)"],
+            after: "gaps")
+
+        var body = droppingSummary(from: parts.body)
+        while body.last == "" { body.removeLast() }
+        body += [
+            "",
+            sessionMarker + clock.string(from: transcript.started) + " -->",
+            heading(for: transcript.started, in: timeZone),
+            "",
+        ]
+        body += bodyLines(of: transcript)
+        return join(front.lines, body)
+    }
+
+    /// `## 17 oct 2026 · 09:30`, the way a person would write it.
+    static func heading(for date: Date, in timeZone: TimeZone) -> String {
+        let day = formatter("d MMM yyyy", timeZone).string(from: date)
+        let time = formatter("HH:mm", timeZone).string(from: date)
+        return "## \(day.lowercased()) · \(time)"
+    }
+
+    /// A model's notes as they are kept: no carriage returns, no stray space
+    /// at either end, and none of this file's own comments, which would end
+    /// the block early or begin a session that never happened.
+    private static func cleanedSummary(_ markdown: String) -> String {
+        markdown
+            .replacingOccurrences(of: "\r", with: "")
+            .replacingOccurrences(of: "<!-- andrew:", with: "<!-- ")
+            .replacingOccurrences(of: "<!-- /andrew:", with: "<!-- /")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The body without any summary block, and without the empty line that
+    /// followed it; the one the front matter is followed by is put back.
+    private static func droppingSummary(from body: [String]) -> [String] {
+        var out: [String] = []
+        var index = 0
+        while index < body.count {
+            if body[index] == summaryOpen,
+               let close = body[(index + 1)...].firstIndex(of: summaryClose) {
+                index = close + 1
+                if index < body.count, body[index] == "" { index += 1 }
+                continue
+            }
+            out.append(body[index])
+            index += 1
+        }
+        if out.first != "" { out.insert("", at: 0) }
+        return out
+    }
+
+    // MARK: - the top of the file as lines
+
+    /// The lines between the two `---`, and everything after the second.
+    /// nil for text that has no front matter. The two join back into the
+    /// text they came from.
+    static func split(_ text: String) -> (front: [String], body: [String])? {
+        let lines = text.components(separatedBy: "\n")
+        guard lines.first == "---",
+              let close = lines.dropFirst().firstIndex(of: "---")
+        else { return nil }
+        return (Array(lines[1..<close]), Array(lines[(close + 1)...]))
+    }
+
+    private static func join(_ front: [String], _ body: [String]) -> String {
+        (["---"] + front + ["---"] + body).joined(separator: "\n")
+    }
+
+    /// The front matter as `key: value` blocks, so a list (the gaps) moves
+    /// with its key and a key can be replaced, added or taken out without
+    /// the others moving.
+    private struct FrontLines {
+        private struct Block {
+            var key: String
+            var lines: [String]
+        }
+
+        private var blocks: [Block] = []
+
+        init(_ lines: [String]) {
+            for line in lines {
+                if line.hasPrefix("- "), !blocks.isEmpty {
+                    blocks[blocks.count - 1].lines.append(line)
+                } else if let colon = line.firstIndex(of: ":") {
+                    blocks.append(Block(key: String(line[..<colon]), lines: [line]))
+                } else {
+                    blocks.append(Block(key: "", lines: [line]))
+                }
+            }
+        }
+
+        var lines: [String] {
+            blocks.flatMap(\.lines)
+        }
+
+        func value(of key: String) -> String? {
+            guard let line = blocks.first(where: { $0.key == key })?.lines.first,
+                  let colon = line.firstIndex(of: ":")
+            else { return nil }
+            return line[line.index(after: colon)...]
+                .trimmingCharacters(in: .whitespaces)
+        }
+
+        /// `lines` replaces the key where it is, or goes after `anchor`, or
+        /// at the end when there is no such key; nil takes it out.
+        mutating func set(_ key: String, to lines: [String]?, after anchor: String?) {
+            if let at = blocks.firstIndex(where: { $0.key == key }) {
+                if let lines {
+                    blocks[at].lines = lines
+                } else {
+                    blocks.remove(at: at)
+                }
+                return
+            }
+            guard let lines else { return }
+            let block = Block(key: key, lines: lines)
+            if let anchor, let at = blocks.firstIndex(where: { $0.key == anchor }) {
+                blocks.insert(block, at: at + 1)
+            } else {
+                blocks.append(block)
+            }
+        }
+    }
+
     // MARK: - formatting
+
+    private static let titleLimit = 120
+    private static let templateLimit = 40
+
+    /// A value that goes on one line of the front matter: newlines and
+    /// control characters become spaces, the ends are trimmed, and it is cut
+    /// at `limit`. nil when nothing is left, so the line is left out.
+    private static func oneLine(_ text: String?, limit: Int) -> String? {
+        guard let text else { return nil }
+        let spaced = String(String.UnicodeScalarView(text.unicodeScalars.map {
+            CharacterSet.controlCharacters.contains($0)
+                || CharacterSet.newlines.contains($0) ? " " : $0
+        }))
+        let cut = String(
+            spaced.trimmingCharacters(in: .whitespaces).prefix(limit))
+            .trimmingCharacters(in: .whitespaces)
+        return cut.isEmpty ? nil : cut
+    }
 
     private static func lostAudio(_ gapCount: Int) -> String {
         "audio was lost in \(gapCount) \(gapCount == 1 ? "gap" : "gaps")"
@@ -536,7 +945,7 @@ enum MeetingTranscriptFile {
         return f
     }
 
-    private static func iso8601(_ timeZone: TimeZone) -> ISO8601DateFormatter {
+    static func iso8601(_ timeZone: TimeZone) -> ISO8601DateFormatter {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime]
         f.timeZone = timeZone

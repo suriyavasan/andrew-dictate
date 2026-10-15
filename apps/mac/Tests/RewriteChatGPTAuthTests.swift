@@ -379,6 +379,22 @@ final class RewriteChatGPTAuthTests: XCTestCase {
 
     // MARK: - the client
 
+    func testTheStreamedRequestTakesTheCallersTimeout() async throws {
+        try saveSession(expiresIn: 600)
+        let lines = [
+            #"data: {"type":"response.output_text.delta","delta":"ok"}"#, "",
+            #"data: {"type":"response.completed","response":{}}"#, "",
+        ]
+        let opener = FakeOpener(status: 200, lines: lines)
+        let client = ChatGPTClient(auth: auth(network: refreshingNetwork()), open: opener.open)
+        let prompt = RewritePrompt(instructions: "i", text: "t")
+
+        _ = try await client.rewrite(prompt, model: "m")
+        _ = try await client.complete(prompt, model: "m", timeout: RewriteHTTP.summaryTimeout)
+
+        XCTAssertEqual(opener.requests.map(\.timeoutInterval), [20, 180])
+    }
+
     func testTheClientStreamsARewrite() async throws {
         try saveSession(expiresIn: 600)
         let opener = FakeOpener(status: 200, lines: [

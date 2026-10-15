@@ -209,6 +209,19 @@ final class RewriteOpenAICompatibleTests: XCTestCase {
         XCTAssertEqual(network.requests.count, 1)
     }
 
+    /// a rewrite is waited on and a summary is not: the same client takes
+    /// either leash, and the short one is the default.
+    func testTheTimeoutIsTheCallersAndARewriteKeepsTheShortOne() async throws {
+        let body = Data(#"{"choices":[{"message":{"content":"ok"}}]}"#.utf8)
+        let network = FakeNetwork { _ in (200, body) }
+        let client = OpenAICompatibleClient(provider: .openAI, key: "sk", send: network.send)
+
+        _ = try await client.rewrite(prompt, model: "m")
+        _ = try await client.complete(prompt, model: "m", timeout: RewriteHTTP.summaryTimeout)
+
+        XCTAssertEqual(network.requests.map(\.timeoutInterval), [20, 180])
+    }
+
     func testTransportErrorsBecomePillReasons() async {
         let cases: [(URLError.Code, RewriteFailure)] = [
             (.notConnectedToInternet, .network),

@@ -56,7 +56,13 @@ struct AppleRewriteClient: RewriteClient {
         self.availability = availability
     }
 
-    func rewrite(_ prompt: RewritePrompt, model: String) async throws -> String {
+    /// the timeout is ignored: the model is on this mac, and there is no
+    /// request to give up on.
+    func complete(
+        _ prompt: RewritePrompt,
+        model: String,
+        timeout: TimeInterval
+    ) async throws -> String {
         if let reason = availability().reason {
             throw RewriteFailure.unavailable(reason)
         }

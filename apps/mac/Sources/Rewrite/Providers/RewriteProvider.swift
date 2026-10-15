@@ -130,9 +130,22 @@ struct RewritePrompt: Equatable, Sendable {
 }
 
 protocol RewriteClient: Sendable {
-    /// the rewritten text, trimmed and never empty. a failure the user can
+    /// the model's answer, trimmed and never empty. a failure the user can
     /// act on is a `RewriteFailure`; cancellation is `CancellationError`.
-    func rewrite(_ prompt: RewritePrompt, model: String) async throws -> String
+    /// the timeout is the request's: a rewrite is a sentence the user waits
+    /// on, a meeting's summary is minutes of talk nobody is waiting on.
+    func complete(
+        _ prompt: RewritePrompt,
+        model: String,
+        timeout: TimeInterval
+    ) async throws -> String
+}
+
+extension RewriteClient {
+    /// a rewrite, on the short leash the paste path allows.
+    func rewrite(_ prompt: RewritePrompt, model: String) async throws -> String {
+        try await complete(prompt, model: model, timeout: RewriteHTTP.rewriteTimeout)
+    }
 }
 
 /// why a rewrite did not come back, in as few words as the pill has room

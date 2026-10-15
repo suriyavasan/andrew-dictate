@@ -13,7 +13,11 @@ struct ChatGPTClient: RewriteClient {
         self.open = open
     }
 
-    func rewrite(_ prompt: RewritePrompt, model: String) async throws -> String {
+    func complete(
+        _ prompt: RewritePrompt,
+        model: String,
+        timeout: TimeInterval
+    ) async throws -> String {
         let session = try await auth.validSession()
         guard session.canUsePlan else {
             throw RewriteFailure.notSignedIn(.chatGPT)
@@ -21,7 +25,8 @@ struct ChatGPTClient: RewriteClient {
         let request = ChatGPTResponses.request(
             prompt: prompt,
             model: model,
-            accessToken: session.accessToken
+            accessToken: session.accessToken,
+            timeout: timeout
         )
         do {
             let (response, lines) = try await open(request)
@@ -80,7 +85,8 @@ enum ChatGPTResponses {
     static func request(
         prompt: RewritePrompt,
         model: String,
-        accessToken: String
+        accessToken: String,
+        timeout: TimeInterval = RewriteHTTP.rewriteTimeout
     ) -> URLRequest {
         var body: [String: Any] = [
             "model": model,
@@ -98,7 +104,7 @@ enum ChatGPTResponses {
             endpoint,
             body: body,
             bearer: accessToken,
-            timeout: RewriteHTTP.rewriteTimeout
+            timeout: timeout
         )
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         return request

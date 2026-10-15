@@ -112,7 +112,11 @@ enum RewriteClients {
 struct UnconfiguredClient: RewriteClient {
     let provider: RewriteProvider
 
-    func rewrite(_ prompt: RewritePrompt, model: String) async throws -> String {
+    func complete(
+        _ prompt: RewritePrompt,
+        model: String,
+        timeout: TimeInterval
+    ) async throws -> String {
         throw RewriteFailure.notSignedIn(provider)
     }
 }
