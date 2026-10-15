@@ -14,6 +14,10 @@ final class HotkeyMonitor {
     var onLockEnd: ((TimeInterval?) -> Void)?
     var onLockCancel: (() -> Void)?
     var onKeyDetected: (() -> Void)?
+    /// the rewrite modifier (⌃, or ⌥ when ⌃ is the dictation key) is down
+    /// with something else: sent on every such change, and the machine
+    /// keeps it only for a take that is recording.
+    var onRewriteModifier: (() -> Void)?
     var onEscape: (() -> Bool)?
 
     private var monitors: [Any] = []
@@ -117,6 +121,12 @@ final class HotkeyMonitor {
 
     private func handleFlagsChanged(_ event: NSEvent) {
         let keyCode = event.keyCode
+        // before anything else reads the event: the modifier can go down
+        // before the key, with it, or at any time while the take records.
+        if !isDetectionOnly,
+           event.modifierFlags.contains(binding.rewriteModifier.flag) {
+            onRewriteModifier?()
+        }
 
         if pressedKeyCodes.contains(keyCode) {
             pressedKeyCodes.remove(keyCode)

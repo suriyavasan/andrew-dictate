@@ -129,6 +129,7 @@ extension TimelineSummary {
         // this list would drop its count silently.
         let exclusions = [
             UtteranceTimeline.CompletionStage.cancelled,
+            .rewritten,
             .leftOnPasteboard,
             .leftOnPasteboardSecure,
         ].compactMap { stage -> String? in
@@ -149,6 +150,7 @@ extension TimelineSummary {
     ) -> String {
         switch stage {
         case .delivered: "delivered"
+        case .rewritten: "rewritten"
         case .leftOnPasteboard: "left on pasteboard"
         case .leftOnPasteboardSecure: "secure field"
         case .cancelled: "cancelled"

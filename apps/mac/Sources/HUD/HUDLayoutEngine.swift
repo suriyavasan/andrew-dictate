@@ -5,6 +5,22 @@ enum HUDContent: Equatable, Sendable {
     case wave
     case prewarming
     case text(String, button: String? = nil)
+    /// the rewrite's picker (fn+⌃): a row of buttons and no sentence.
+    case choices([HUDChoiceButton])
+}
+
+/// one button on the rewrite's picker: the digit that picks it, its word,
+/// and whether it is the one the picker takes when nothing is picked.
+struct HUDChoiceButton: Equatable, Sendable {
+    let key: String
+    let title: String
+    let isDefault: Bool
+}
+
+/// what the rewrite has on the pill: the picker, or the wait for the model.
+enum HUDRewritePill: Equatable, Sendable {
+    case picking([HUDChoiceButton])
+    case working(String)
 }
 
 /// the size of the thing on the stage — the ribbon's canvas or the text
@@ -15,6 +31,10 @@ struct HUDLayout: Equatable, Sendable {
     let size: CGSize
     let lineCount: Int
     var button: CGSize? = nil
+    /// the picker's buttons, left to right, and how wide each title may
+    /// run before it is cut.
+    var choices: [CGSize]? = nil
+    var choiceTitleWidth: CGFloat? = nil
 }
 
 enum HUDLayoutEngine {
@@ -37,6 +57,16 @@ enum HUDLayoutEngine {
     static let buttonInset: CGFloat = (minimumSize.height - buttonHeight) / 2
     static let buttonGap: CGFloat = 10
     static let buttonHorizontalPadding: CGFloat = 11
+
+    /// the digit beside a choice's word: smaller and dimmer, a hint.
+    static var keyFont: NSFont {
+        .monospacedDigitSystemFont(ofSize: 10, weight: .medium)
+    }
+    static let choiceGap: CGFloat = 6
+    static let keyGap: CGFloat = 5
+    /// a word of yours gets this much before it is cut, unless the row
+    /// needs less of it to fit.
+    static let longestChoiceTitle: CGFloat = 120
 
     static var primaryFont: NSFont {
         .systemFont(ofSize: 12, weight: .medium)
@@ -82,6 +112,8 @@ enum HUDLayoutEngine {
                 size: waveSize,
                 lineCount: 1
             )
+        case let .choices(buttons):
+            return choicesLayout(buttons, screenWidth: screenWidth)
         case let .text(text, button):
             let maximumWidth = max(
                 minimumSize.width,
@@ -118,6 +150,50 @@ enum HUDLayoutEngine {
                 button: buttonSize
             )
         }
+    }
+
+    /// one row, never two: the stage is the height of a two-line pill and
+    /// a lamp, and the lamp must not move. a row too wide for the screen
+    /// cuts its longest words first, evenly, until it fits.
+    static func choicesLayout(
+        _ buttons: [HUDChoiceButton],
+        screenWidth: CGFloat
+    ) -> HUDLayout {
+        let maximumWidth = max(
+            minimumSize.width,
+            screenWidth * maximumScreenWidthFraction
+        )
+        let keyWidths = buttons.map { measuredWidth(of: $0.key, font: keyFont) }
+        let titleWidths = buttons.map {
+            min(measuredWidth(of: $0.title, font: buttonFont), longestChoiceTitle)
+        }
+        let fixed = buttonInset * 2
+            + choiceGap * CGFloat(max(0, buttons.count - 1))
+            + keyWidths.reduce(0) { $0 + $1 + keyGap + buttonHorizontalPadding * 2 }
+            + measurementSafety
+        var cap = longestChoiceTitle
+        while cap > 24,
+              fixed + titleWidths.reduce(0, { $0 + min($1, cap) }) > maximumWidth {
+            cap -= 4
+        }
+        let sizes = zip(keyWidths, titleWidths).map { key, title in
+            CGSize(
+                width: ceil(key + keyGap + min(title, cap) + buttonHorizontalPadding * 2),
+                height: buttonHeight
+            )
+        }
+        let width = buttonInset * 2
+            + choiceGap * CGFloat(max(0, sizes.count - 1))
+            + sizes.reduce(0) { $0 + $1.width }
+        return HUDLayout(
+            size: CGSize(
+                width: max(minimumSize.width, min(ceil(width), maximumWidth)),
+                height: minimumSize.height
+            ),
+            lineCount: 1,
+            choices: sizes,
+            choiceTitleWidth: cap
+        )
     }
 
     static func buttonSize(for title: String) -> CGSize {

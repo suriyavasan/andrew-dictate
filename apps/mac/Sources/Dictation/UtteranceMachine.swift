@@ -137,6 +137,10 @@ final class UtteranceMachine {
     var engineVersion: (@MainActor () -> String)?
     /// how long that model gets to answer a take; parakeet's when unset.
     var transcriptionPace: (@MainActor () -> TranscriptionDeadline.Pace)?
+    /// a rewrite press (fn+⌃) hands its cleaned words here, between the
+    /// cleaner and the paste: the picker, then the model. nil while the
+    /// feature is off, and then the modifier means nothing.
+    var rewrite: (@MainActor (String) async -> RewriteOutcome)?
 
     /// One cleaner, kept. Its nineteen regexes — plus one per taught word —
     /// compile on construction, and that used to happen on the main actor
@@ -226,6 +230,11 @@ final class UtteranceMachine {
     /// the lock came down on this take, recording or transcribing: what it
     /// heard is copied when it is written out, never pasted.
     private var copiesInsteadOfPasting = false
+    /// the rewrite modifier went down during this take (fn+⌃).
+    private var wantsRewrite = false
+    /// the pipeline whose words are with the picker or the model, if one
+    /// is: a press then is refused, never taken for a hung engine.
+    private var rewritingGeneration: Int?
     /// asleep or locked: nobody is there to read a pill, so the last one
     /// said waits for `systemResumed`, and no deadline runs out meanwhile.
     private var isSystemPaused = false
@@ -306,6 +315,14 @@ final class UtteranceMachine {
             }
             return
         }
+        // the words are with the picker or the model: that is you, or a
+        // network, and neither is a hung engine. esc drops it.
+        if state == .transcribing,
+           rewritingGeneration == pipelineGeneration {
+            flashNotice("still rewriting the last one", duration: 1.4)
+            refuse(.stillFinishing)
+            return
+        }
         // the sentence this press drops as hung, if it drops one.
         var dropped: [Float]?
         if state == .transcribing {
@@ -358,6 +375,7 @@ final class UtteranceMachine {
             clearRetry()
         }
         copiesInsteadOfPasting = false
+        wantsRewrite = false
         timelineSequence &+= 1
         let timelineID = timelineSequence
         let keyDown = clock.now
@@ -917,6 +935,17 @@ final class UtteranceMachine {
 
     /// whether `esc` was ours to take: only while there is something to
     /// throw away.
+    /// the rewrite modifier is down. it counts for the take that is
+    /// recording, whenever in the take it went down, and for nothing else.
+    func rewriteModifierPressed() {
+        guard state == .recording,
+              rewrite != nil,
+              micTurn?.isEnding == false else {
+            return
+        }
+        wantsRewrite = true
+    }
+
     func escape() -> Bool {
         guard state != .idle, state != .prewarming else {
             return false
@@ -1057,6 +1086,7 @@ final class UtteranceMachine {
         }
         clearRetry()
         copiesInsteadOfPasting = false
+        wantsRewrite = false
 
         let now = clock.now
         timelineSequence &+= 1
@@ -1319,10 +1349,11 @@ final class UtteranceMachine {
             // fixer's field is the only dictation target we own. every
             // other dictation goes through the cleaner built once for the
             // current dictionary and settings.
-            let cleanedTranscript = pastesIntoOurOwnUI(
+            let intoOurOwnUI = pastesIntoOurOwnUI(
                 target: focusAnchor?.targetBundleIdentifier,
                 own: ownBundleIdentifier
             )
+            let cleanedTranscript = intoOurOwnUI
                 ? DeterministicCleaner(
                     entries: dictionary(),
                     fullCleanup: false
@@ -1362,28 +1393,62 @@ final class UtteranceMachine {
                 )
                 return
             }
+            // fn+⌃: the picker, then the model, between the cleaner and
+            // the paste. not for words on their way to the clipboard —
+            // nobody is at the mac to pick — and not for a correction
+            // typed into our own window, which is a word, not a sentence.
+            var inserted = cleanedTranscript
+            var rewriteFailure: String?
+            let wentThroughRewrite = wantsRewrite
+                && !copiesInsteadOfPasting
+                && !intoOurOwnUI
+                && rewrite != nil
+            if wentThroughRewrite, let rewrite {
+                rewritingGeneration = generation
+                let answer = await rewrite(cleanedTranscript)
+                if rewritingGeneration == generation {
+                    rewritingGeneration = nil
+                }
+                try Task.checkCancellation()
+                guard generation == pipelineGeneration else {
+                    return
+                }
+                press?.rewritten = clock.now
+                press?.rewriteResult = answer.resultName
+                switch answer {
+                case let .rewritten(text, style):
+                    inserted = text
+                    press?.rewriteStyle = style
+                case .asSaid:
+                    break
+                case let .failed(reason, style):
+                    press?.rewriteStyle = style
+                    rewriteFailure = reason
+                }
+            }
+
             // a second dictation into the same field must not weld itself
             // to the first. the space is a delivery detail — the cleaner
             // still renders a flush string and the archive still keeps it.
             let joinsWhatIsThere = needsJoinSpace(after: textAtCaret?.last)
             let pasteTranscript = joinsWhatIsThere
-                ? " " + cleanedTranscript
-                : cleanedTranscript
+                ? " " + inserted
+                : inserted
 
-            emit(.transcribed(heard: transcript, inserted: cleanedTranscript))
+            emit(.transcribed(heard: transcript, inserted: inserted))
             pendingArchiveText = (
                 heard: transcript,
-                inserted: cleanedTranscript
+                inserted: inserted
             )
             let outcome = if copiesInsteadOfPasting {
-                await inserter.copy(cleanedTranscript, because: .locked)
+                await inserter.copy(inserted, because: .locked)
             } else {
                 await inserter.insert(pasteTranscript, at: focusAnchor)
             }
             if outcome.result != .leftOnPasteboard(
                 .pasteboardUnavailable
             ) {
-                emit(.dictated(cleanedTranscript))
+                emit(.dictated(inserted))
             }
             guard generation == pipelineGeneration else {
                 return
@@ -1397,7 +1462,7 @@ final class UtteranceMachine {
                 // soon as ⌘V is posted, and that is what "inserted" means.
                 completeTimeline(
                     at: outcome.insertedAt,
-                    stage: .delivered
+                    stage: wentThroughRewrite ? .rewritten : .delivered
                 )
                 // success is silent, but a take the user did not end is
                 // not quite success: say what landed, after it lands. a
@@ -1409,6 +1474,12 @@ final class UtteranceMachine {
                         "five minutes — that's the cap. pasted what i had.",
                         duration: 2.4
                     )
+                } else if let rewriteFailure {
+                    setState(.idle)
+                    flashFeedback(
+                        "couldn't rewrite — \(rewriteFailure). pasted what you said.",
+                        duration: 3.2
+                    )
                 } else if press?.micChanged == true {
                     setState(.idle)
                     flashFeedback(
@@ -1416,7 +1487,12 @@ final class UtteranceMachine {
                         duration: 2.4
                     )
                 }
-                emit(.delivered(heard: transcript, inserted: cleanedTranscript))
+                // the learner diffs your fixes against the engine's words
+                // (ADR 0046); the model's words are not the engine's, so a
+                // rewrite teaches it nothing.
+                if inserted == cleanedTranscript {
+                    emit(.delivered(heard: transcript, inserted: inserted))
+                }
                 endPress(.delivered)
             case let .leftOnPasteboard(reason):
                 completeTimeline(
@@ -1479,6 +1555,7 @@ final class UtteranceMachine {
 
     private func invalidatePipeline() {
         setRecordingLocked(false)
+        rewritingGeneration = nil
         pipelineGeneration += 1
         pipelineTask?.cancel()
         pipelineTask = nil
@@ -1575,6 +1652,7 @@ final class UtteranceMachine {
             activeFocusAnchor = nil
         }
 
+        rewritingGeneration = nil
         pipelineGeneration += 1
         pipelineTask?.cancel()
         pipelineTask = nil

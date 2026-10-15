@@ -24,6 +24,7 @@ extension PressRecord {
             ("samples_ready_ms", stages.samplesReady),
             ("transcript_ms", stages.transcriptReady),
             ("cleaned_ms", stages.cleaned),
+            ("rewrite_ms", stages.rewritten),
             ("paste_posted_ms", stages.pastePosted),
             ("paste_done_ms", stages.pasteCompleted),
             ("end_ms", stages.ended),
@@ -54,6 +55,12 @@ extension PressRecord {
         }
         if retry {
             fields.append("retry=1")
+        }
+        if let rewriteStyle {
+            fields.append("rewrite=\(rewriteStyle)")
+        }
+        if let rewriteResult {
+            fields.append("rewrite_result=\(rewriteResult)")
         }
         if let mainStallMs {
             fields.append("main_stall_ms=\(mainStallMs)")

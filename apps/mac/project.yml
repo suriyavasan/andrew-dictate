@@ -192,6 +192,12 @@ targets:
       - Sources/Hotkey/TapLockDetector.swift
       - Sources/Hotkey/TranscribingRepress.swift
       - Sources/Dictation
+      # the rewrite (fn+⌃): prompts, picker, settings and the providers,
+      # every request built and read without the network. the tone pad
+      # is a view and stays with the app.
+      - path: Sources/Rewrite
+        excludes:
+          - TonePadView.swift
       # the learner, the locator and the follower are pure; the AX reader
       # and watcher compile here and are never driven.
       - Sources/Learning

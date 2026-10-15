@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 
@@ -50,6 +51,17 @@ struct HotkeyBinding: Codable, Hashable, Identifiable, Sendable {
     /// the whole gesture in one line, so the settings row and anything that
     /// adopts it later cannot say it two ways. the words are the hud's own
     /// — the pill says "locked — tap to end", so this says locks and end.
+    /// the key held with this one to have the take rewritten (fn+⌃). ⌃,
+    /// unless ⌃ is the dictation key itself: then ⌥.
+    var rewriteModifier: RewriteModifier {
+        switch keyCode {
+        case Self.rightControl.keyCode, Self.leftControl.keyCode:
+            .option
+        default:
+            .control
+        }
+    }
+
     static let gestureExplanation =
         "hold it and talk. double-tap locks it on hands-free, tap once to end. esc cancels."
 }
@@ -75,5 +87,25 @@ extension UserDefaults {
         }
 
         set(data, forKey: "AndrewDictate.hotkey.dictation")
+    }
+}
+
+/// the modifier that turns a take into a rewrite.
+enum RewriteModifier: Equatable, Sendable {
+    case control
+    case option
+
+    var symbol: String {
+        switch self {
+        case .control: "⌃"
+        case .option: "⌥"
+        }
+    }
+
+    var flag: NSEvent.ModifierFlags {
+        switch self {
+        case .control: .control
+        case .option: .option
+        }
     }
 }

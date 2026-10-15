@@ -156,6 +156,26 @@ final class DictationCoordinator: ObservableObject {
 
     let dictionaryStore: DictionaryStore
     let settings: AppSettings
+    /// fn+⌃: off until you turn it on in settings › rewrite.
+    let rewriteSettings: RewriteSettings
+    let rewriteAccounts: RewriteAccounts
+    private lazy var rewriteController: RewriteController = {
+        let controller = RewriteController(
+            settings: rewriteSettings
+        ) { [rewriteAccounts, rewriteSettings] in
+            await rewriteAccounts.connect(
+                rewriteSettings.provider,
+                model: rewriteSettings.model(for: rewriteSettings.provider)
+            )
+        }
+        controller.showPill = { [weak self] pill in
+            self?.showRewritePill(pill)
+        }
+        controller.announce = { [weak self] message in
+            self?.announce(message)
+        }
+        return controller
+    }()
 
     private let hotkeyMonitor: HotkeyMonitor
     private let transcriptionEngine: SpeechEngine
@@ -327,6 +347,8 @@ final class DictationCoordinator: ObservableObject {
 
     init(settings: AppSettings = .shared) {
         self.settings = settings
+        rewriteSettings = .shared
+        rewriteAccounts = .shared
         activeDictationModel = settings.dictationModel
         engineSwitchState = EngineSwitchState(
             activeVersion: settings.dictationModel
@@ -414,6 +436,9 @@ final class DictationCoordinator: ObservableObject {
         monitor.onEscape = { [weak self] in
             self?.machine.escape() ?? false
         }
+        monitor.onRewriteModifier = { [weak self] in
+            self?.machine.rewriteModifierPressed()
+        }
         // built ahead of the first press, off the main thread, and with
         // pre-roll on, listening.
         captureSlot.prepare()
@@ -481,6 +506,7 @@ final class DictationCoordinator: ObservableObject {
 
         wireMachine()
         wirePillQuestions()
+        wireRewrite()
         installSystemLifecycleObservers()
         wireMeetings()
         wireMeetingShortcut()
@@ -2096,9 +2122,13 @@ final class DictationCoordinator: ObservableObject {
                 )
             )
             panel.present()
-            // only a question takes the mouse, and only over the pill.
+            // only a question or the rewrite's picker takes the mouse, and
+            // only over the pill.
+            let takesClicks = self.isQuestionUp
+                || (self.rewriteController.isPicking
+                    && self.activeFeedbackGeneration == nil)
             panel.makePillReachable(
-                self.isQuestionUp ? self.hudViewModel.layout.size : nil
+                takesClicks ? self.hudViewModel.layout.size : nil
             )
         }
     }
@@ -2957,6 +2987,9 @@ extension DictationCoordinator {
     /// minute at most, and not for a pointer that was resting there when
     /// the pill came up.
     private func pointerOverPill(_ over: Bool) {
+        if rewriteController.isPicking {
+            rewriteController.pointerOverPill(over)
+        }
         guard isQuestionUp, var shown = questionShown else { return }
         shown.countdown.pointer(
             isOver: over, at: NSEvent.mouseLocation, now: questionNow)
@@ -3090,3 +3123,35 @@ enum HUDHierarchyDump {
     }
 }
 #endif
+
+// MARK: - the rewrite (fn+⌃)
+
+extension DictationCoordinator {
+    /// the machine asks for a rewrite only while it is on: off, ⌃ during a
+    /// take means nothing, as it always has.
+    private func wireRewrite() {
+        hudViewModel.onChoice = { [weak self] index in
+            self?.rewriteController.chose(button: index)
+        }
+        rewriteSettings.$isEnabled
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] enabled in
+                guard let self else { return }
+                guard enabled else {
+                    self.machine.rewrite = nil
+                    return
+                }
+                self.machine.rewrite = { @MainActor [weak self] text in
+                    guard let self else { return .asSaid }
+                    return await self.rewriteController.run(text)
+                }
+            }
+            .store(in: &settingsCancellables)
+    }
+
+    private func showRewritePill(_ pill: HUDRewritePill?) {
+        hudViewModel.showRewrite(pill)
+        synchronizeHUD()
+    }
+}
