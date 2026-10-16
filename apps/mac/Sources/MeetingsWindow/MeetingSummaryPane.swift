@@ -174,6 +174,12 @@ private struct SettingsHint: View {
             }
             .help("open settings")
             .accessibilityAddTraits(.isLink)
+            // a tap is not a key: voiceover's press and a keyboard user's
+            // way to the same place.
+            .accessibilityAction {
+                NSApp.activate()
+                openSettings()
+            }
     }
 }
 

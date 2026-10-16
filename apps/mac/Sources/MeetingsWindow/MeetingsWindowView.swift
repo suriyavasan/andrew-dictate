@@ -86,6 +86,7 @@ struct MeetingsWindowView: View {
                 .font(.system(size: 30, weight: .light))
                 .foregroundStyle(BrandUI.gold.opacity(0.8))
                 .padding(.bottom, MW.s8)
+                .accessibilityHidden(true)
             Text("your meetings go here")
                 .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(BrandUI.textPrimary)

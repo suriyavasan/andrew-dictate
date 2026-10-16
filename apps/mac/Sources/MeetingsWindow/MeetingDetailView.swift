@@ -80,6 +80,7 @@ struct RecordingDetailView: View {
                         Image(systemName: "sparkles")
                             .font(.system(size: 18))
                             .foregroundStyle(BrandUI.gold.opacity(0.75))
+                            .accessibilityHidden(true)
                         Text("the notes are written when the meeting ends")
                             .font(.system(size: 12))
                             .foregroundStyle(BrandUI.textSecondary)
@@ -122,7 +123,7 @@ struct MeetingSplit<Summary: View, Transcript: View>: View {
                 }
             } else {
                 VStack(spacing: 0) {
-                    Picker("", selection: $side) {
+                    Picker("show", selection: $side) {
                         ForEach(Side.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                     }
                     .pickerStyle(.segmented)
@@ -243,12 +244,8 @@ private struct MeetingDetailHeader: View {
 
     /// `thu 16 oct · 09:30 · 42m · 3 speakers · 2 sessions`
     private var meta: String {
-        let day = DateFormatter()
-        day.setLocalizedDateFormatFromTemplate("EEE d MMM")
-        let time = DateFormatter()
-        time.setLocalizedDateFormatFromTemplate("jmm")
         let started = document.header.started
-        var parts = ["\(day.string(from: started)) · \(time.string(from: started))".lowercased()]
+        var parts = ["\(MW.date(started, "EEE d MMM")) · \(MW.date(started, "jmm"))".lowercased()]
         parts.append(document.header.duration.spoken)
         let speakers = document.speakers.count
         if speakers > 0 { parts.append(speakers == 1 ? "1 speaker" : "\(speakers) speakers") }
@@ -309,6 +306,7 @@ private struct MeetingDetailHeader: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .help("copy")
+        .accessibilityLabel("copy")
     }
 
     private var moreMenu: some View {
@@ -326,5 +324,6 @@ private struct MeetingDetailHeader: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .help("more")
+        .accessibilityLabel("more")
     }
 }

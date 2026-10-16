@@ -2650,7 +2650,12 @@ extension DictationCoordinator {
         built.keepMeetingRecord = { [weak self] record in
             self?.keep(record)
         }
+        // the meeting's clock moves with every chunk, ten times a second;
+        // the panel and the window show whole seconds. told more often, the
+        // window lays the whole transcript out again on every chunk.
         built.$elapsed
+            .map { Duration.seconds($0.components.seconds) }
+            .removeDuplicates()
             .sink { [weak self] elapsed in
                 self?.liveTranscript.elapsed = elapsed
             }

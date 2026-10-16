@@ -124,8 +124,14 @@ final class MeetingsLibraryModel: ObservableObject {
     private struct Loaded: Sendable {
         let document: MeetingDocument
         let stamp: Date?
-        /// title, notes and words in one string, for a search to look through.
+        /// title, notes and words in one string, for a search to look through,
+        /// folded the way a search folds: a search is then a plain look
+        /// through it, and not a fold of every meeting on every keystroke.
         let haystack: String
+        /// what its row shows, worked out when the file is read: each walks
+        /// the whole document, and the list is laid out again often.
+        let speakers: [String]
+        let snippet: String
     }
 
     /// where the meetings come from; the owner may point it somewhere else
@@ -220,7 +226,9 @@ final class MeetingsLibraryModel: ObservableObject {
             document.displayTitle, document.summary ?? "", document.sessions
                 .flatMap(\.turns).map(\.text).joined(separator: "\n"),
         ].joined(separator: "\n")
-        return Loaded(document: document, stamp: stamp, haystack: haystack)
+        return Loaded(
+            document: document, stamp: stamp, haystack: folded(haystack),
+            speakers: document.speakers, snippet: document.snippet)
     }
 
     /// reads one file again, now: after a change made here.
@@ -252,20 +260,24 @@ final class MeetingsLibraryModel: ObservableObject {
         sections.flatMap { $0.items.map(\.entry) }
     }
 
+    /// published only when it changed: every publish lays the window out
+    /// again, and a reload that found nothing new is most of them.
     private func rebuild() {
-        entries = summaries.map(makeEntry)
+        let rebuilt = summaries.map(makeEntry)
+        if rebuilt != entries { entries = rebuilt }
         refilter()
     }
 
     private func makeEntry(_ summary: MeetingSummary) -> Entry {
-        guard let document = loaded[summary.fileURL]?.document else {
+        guard let cached = loaded[summary.fileURL] else {
             return Entry(
                 summary: summary, title: MeetingDocument.untitled(app: summary.app),
                 speakers: [], snippet: "", hasNotes: false, hasWords: true)
         }
+        let document = cached.document
         return Entry(
-            summary: summary, title: document.displayTitle, speakers: document.speakers,
-            snippet: document.snippet, hasNotes: document.summary != nil,
+            summary: summary, title: document.displayTitle, speakers: cached.speakers,
+            snippet: cached.snippet, hasNotes: document.summary != nil,
             hasWords: document.hasWords)
     }
 
@@ -275,25 +287,27 @@ final class MeetingsLibraryModel: ObservableObject {
         if needle.isEmpty {
             items = entries.map { Item(entry: $0, hit: nil) }
         } else {
-            items = entries.compactMap { match($0, needle) }
+            let foldedNeedle = Self.folded(needle)
+            items = entries.compactMap { match($0, needle, folded: foldedNeedle) }
         }
         let today = now()
         let grouped = Dictionary(grouping: items) {
             Group.of($0.entry.summary.started, now: today, calendar: calendar)
         }
-        sections = Group.allCases.compactMap { group in
+        let regrouped = Group.allCases.compactMap { group in
             grouped[group].map { Section(group: group, items: $0) }
         }
+        if regrouped != sections { sections = regrouped }
     }
 
     /// a meeting is a hit when its title, notes or words have the query in
     /// them, ignoring case and accents. one not read yet can only be found
     /// by its call app's name.
-    private func match(_ entry: Entry, _ needle: String) -> Item? {
+    private func match(_ entry: Entry, _ needle: String, folded foldedNeedle: String) -> Item? {
         guard let cached = loaded[entry.id] else {
             return Self.contains(entry.title, needle) ? Item(entry: entry, hit: nil) : nil
         }
-        guard Self.contains(cached.haystack, needle) else { return nil }
+        guard cached.haystack.contains(foldedNeedle) else { return nil }
         if Self.contains(entry.title, needle) { return Item(entry: entry, hit: nil) }
         let document = cached.document
         if let notes = document.summary, let hit = Self.excerpt(of: notes, for: needle) {
@@ -307,6 +321,12 @@ final class MeetingsLibraryModel: ObservableObject {
             }
         }
         return Item(entry: entry, hit: nil)
+    }
+
+    /// `text` as a search sees it: case and accents gone, as
+    /// `MeetingTranscriptFind.options` ignores them.
+    private nonisolated static func folded(_ text: String) -> String {
+        text.folding(options: MeetingTranscriptFind.options, locale: nil)
     }
 
     private static func contains(_ text: String, _ needle: String) -> Bool {

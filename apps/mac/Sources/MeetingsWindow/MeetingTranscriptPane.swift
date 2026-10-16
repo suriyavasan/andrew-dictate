@@ -10,11 +10,16 @@ struct MeetingTranscriptPane: View {
     /// the streaming pass, while the meeting is being recorded.
     let live: LiveTranscriptModel?
 
+    /// the rows of the file, laid out once per file: the window draws this
+    /// pane again whenever anything it watches moves — a search, a reload,
+    /// a summary — and a long meeting is thousands of rows.
+    @State private var rows = Rows()
+
     var body: some View {
         if let live {
-            LiveBody(document: document, live: live)
+            LiveBody(document: document, live: live, rows: rows)
         } else if let document {
-            PaneBody(items: MeetingTranscriptBlocks.items(for: document), document: document, isLive: false)
+            PaneBody(items: rows.items(for: document), document: document, isLive: false)
         } else {
             EmptyView()
         }
@@ -25,10 +30,11 @@ struct MeetingTranscriptPane: View {
     private struct LiveBody: View {
         let document: MeetingDocument?
         @ObservedObject var live: LiveTranscriptModel
+        let rows: Rows
 
         var body: some View {
             let known = document?.speakers ?? []
-            let before = document.map(MeetingTranscriptBlocks.items(for:)) ?? []
+            let before = document.map(rows.items(for:)) ?? []
             // a meeting recorded into again gets its new session announced.
             let marker: [MeetingTranscriptBlocks.Item] = document == nil || live.lines.isEmpty
                 ? [] : [.init(id: "session-live", kind: .session("now"))]
@@ -36,6 +42,22 @@ struct MeetingTranscriptPane: View {
                 items: before + marker
                     + MeetingTranscriptBlocks.items(live: live.lines, knownSpeakers: known),
                 document: document, isLive: true)
+        }
+    }
+
+    /// the last file's rows, kept until the file is another. not watched:
+    /// it only saves the work, and what is drawn comes from `document`.
+    /// an unchanged file is the same arrays, which compare at once.
+    final class Rows {
+        private var document: MeetingDocument?
+        private var items: [MeetingTranscriptBlocks.Item] = []
+
+        func items(for document: MeetingDocument) -> [MeetingTranscriptBlocks.Item] {
+            if document != self.document {
+                self.document = document
+                items = MeetingTranscriptBlocks.items(for: document)
+            }
+            return items
         }
     }
 

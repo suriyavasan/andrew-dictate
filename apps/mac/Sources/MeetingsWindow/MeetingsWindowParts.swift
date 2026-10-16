@@ -6,6 +6,27 @@ import SwiftUI
 /// shimmer. kept in one place so the sidebar, the panes and the bar cannot
 /// drift into three ideas of the same 8.
 enum MW {
+    /// a date set by a template, `EEE d MMM`, from a formatter made once per
+    /// template, calendar and locale. making one is among the slower things
+    /// Foundation does, and the rows and the header are drawn again often.
+    @MainActor
+    static func date(
+        _ date: Date, _ template: String,
+        calendar: Calendar = .current, locale: Locale = .current
+    ) -> String {
+        let key = "\(template)|\(locale.identifier)|\(calendar.identifier)|\(calendar.timeZone.identifier)"
+        if let formatter = formatters[key] { return formatter.string(from: date) }
+        let formatter = DateFormatter()
+        formatter.locale = locale
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.setLocalizedDateFormatFromTemplate(template)
+        formatters[key] = formatter
+        return formatter.string(from: date)
+    }
+
+    @MainActor private static var formatters: [String: DateFormatter] = [:]
+
     /// the spacing ladder. nothing in the window uses a gap off it.
     static let s8: CGFloat = 8
     static let s12: CGFloat = 12
@@ -152,6 +173,7 @@ struct MWSpinner: View {
     var lineWidth: CGFloat = 2
     var color: Color = BrandUI.gold
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var angle = 0.0
 
     var body: some View {
@@ -161,6 +183,9 @@ struct MWSpinner: View {
             .frame(width: size, height: size)
             .rotationEffect(.degrees(angle))
             .onAppear {
+                // still, when the mac is asked for less motion: the arc
+                // alone says it is working.
+                guard !reduceMotion else { return }
                 withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) {
                     angle = 360
                 }

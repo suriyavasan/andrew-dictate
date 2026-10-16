@@ -39,7 +39,7 @@ enum MeetingTranscriptBlocks {
     /// a recorded meeting. headings only when there is more than one session,
     /// because the clock restarts in each and one heading alone says nothing.
     static func items(for document: MeetingDocument) -> [Item] {
-        let speakers = document.speakers
+        let colours = colours(of: document.speakers)
         var items: [Item] = []
         let several = document.sessions.count > 1
         for (s, session) in document.sessions.enumerated() {
@@ -55,7 +55,7 @@ enum MeetingTranscriptBlocks {
                     kind: .turn(Turn(
                         at: line.at, speaker: line.speaker, text: line.text,
                         beginsRun: line.speaker != previous,
-                        colour: colour(of: line.speaker, in: speakers),
+                        colour: colours[line.speaker],
                         isConfirmed: true))))
                 previous = line.speaker
             }
@@ -73,6 +73,7 @@ enum MeetingTranscriptBlocks {
             let label = label(line.speaker)
             if !speakers.contains(label) { speakers.append(label) }
         }
+        let colours = colours(of: speakers)
         var previous: String?
         return lines.map { line in
             let label = label(line.speaker)
@@ -82,7 +83,7 @@ enum MeetingTranscriptBlocks {
                 kind: .turn(Turn(
                     at: line.at, speaker: label, text: line.text,
                     beginsRun: label != previous,
-                    colour: colour(of: label, in: speakers),
+                    colour: colours[label],
                     isConfirmed: line.isConfirmed)))
         }
     }
@@ -101,6 +102,16 @@ enum MeetingTranscriptBlocks {
         let others = speakers.filter { $0 != you }
         guard let index = others.firstIndex(of: speaker) else { return nil }
         return index % palette
+    }
+
+    /// `colour(of:in:)` for every speaker at once, for laying out a whole
+    /// transcript without going through the speakers again on every row.
+    private static func colours(of speakers: [String]) -> [String: Int] {
+        var colours: [String: Int] = [:]
+        for speaker in speakers where colours[speaker] == nil {
+            if let colour = colour(of: speaker, in: speakers) { colours[speaker] = colour }
+        }
+        return colours
     }
 
     private static func heading(_ date: Date, _ timeZone: TimeZone) -> String {

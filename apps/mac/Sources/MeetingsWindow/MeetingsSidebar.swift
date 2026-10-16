@@ -125,10 +125,14 @@ struct MeetingsSidebar: View {
                         header("recording", first: true)
                         RecordingRow(
                             state: state,
-                            isSelected: library.selection == .recording
+                            isSelected: library.selection == .recording,
+                            showsFocus: listFocused
                         )
                         .id(MeetingsLibraryModel.Selection.recording)
                         .onTapGesture { choose(.recording) }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityAddTraits(library.selection == .recording ? [.isButton, .isSelected] : .isButton)
+                        .accessibilityAction { choose(.recording) }
                     }
                     ForEach(Array(library.sections.enumerated()), id: \.element.id) { index, section in
                         header(section.group.title, first: index == 0 && !showsRecordingRow)
@@ -175,13 +179,26 @@ struct MeetingsSidebar: View {
             isSelected: library.selection == .meeting(url),
             isRecording: state.recordingInto == url && state.phase != .idle,
             isSummarizing: summaries.state(for: url) == .summarizing,
-            flashes: state.flash == url
+            flashes: state.flash == url,
+            showsFocus: listFocused
         )
         .id(MeetingsLibraryModel.Selection.meeting(url))
         .onTapGesture { choose(.meeting(url)) }
         .contextMenu { MeetingMenuItems(state: state, library: library, summaries: summaries, entry: item.entry) }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(library.selection == .meeting(url) ? [.isButton, .isSelected] : .isButton)
+        // a click is a tap; voiceover's press, and the context menu's lines,
+        // are these.
+        .accessibilityAction { choose(.meeting(url)) }
+        .accessibilityAction(named: "record into this meeting") {
+            if !state.isBusy { state.record(into: url) }
+        }
+        .accessibilityAction(named: "rename") {
+            library.selection = .meeting(url)
+            state.renameRequest = url
+        }
+        .accessibilityAction(named: "show in finder") { state.revealInFinder(url) }
+        .accessibilityAction(named: "delete") { state.pendingDelete = url }
     }
 
     private func choose(_ selection: MeetingsLibraryModel.Selection) {
@@ -201,6 +218,7 @@ struct MeetingsSidebar: View {
 // MARK: - rows
 
 /// how a row says when: `today · 9:30`, `thu · 14:02`, `16 oct · 09:30`.
+@MainActor
 enum SidebarWhen {
     static func label(
         _ date: Date, group: MeetingsLibraryModel.Group, now: Date = Date(),
@@ -221,12 +239,7 @@ enum SidebarWhen {
     private static func format(
         _ date: Date, _ template: String, _ calendar: Calendar, _ locale: Locale
     ) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = locale
-        formatter.calendar = calendar
-        formatter.timeZone = calendar.timeZone
-        formatter.setLocalizedDateFormatFromTemplate(template)
-        return formatter.string(from: date)
+        MW.date(date, template, calendar: calendar, locale: locale)
     }
 }
 
@@ -237,6 +250,9 @@ private struct SidebarRow: View {
     let isRecording: Bool
     let isSummarizing: Bool
     let flashes: Bool
+    /// the list has the keyboard: the selected row says so, since the
+    /// list's own focus ring is off.
+    let showsFocus: Bool
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovering = false
@@ -277,7 +293,9 @@ private struct SidebarRow: View {
         }
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(BrandUI.gold.opacity(isSelected ? 0.25 : 0), lineWidth: 1)
+                .stroke(
+                    BrandUI.gold.opacity(isSelected ? (showsFocus ? 0.7 : 0.25) : 0),
+                    lineWidth: isSelected && showsFocus ? 1.5 : 1)
         }
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -287,7 +305,7 @@ private struct SidebarRow: View {
         .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .onHover { isHovering = $0 }
         .onChange(of: flashes, initial: true) { _, now in
-            guard now else { return }
+            guard now, !reduceMotion else { return }
             glow = 0.34
             withAnimation(.easeOut(duration: 1.1)) { glow = 0 }
         }
@@ -375,7 +393,10 @@ private struct SpeakerDots: View {
                         .foregroundStyle(BrandUI.textSecondary)
                 }
             }
-            .accessibilityLabel("\(speakers.count) speakers")
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(speakers.count == 1
+                ? "1 speaker: \(speakers[0])"
+                : "\(speakers.count) speakers: \(speakers.joined(separator: ", "))")
         }
     }
 }
@@ -414,6 +435,7 @@ struct PulsingRecordDot: View {
 private struct RecordingRow: View {
     @ObservedObject var state: MeetingsWindowState
     let isSelected: Bool
+    let showsFocus: Bool
 
     @State private var isHovering = false
 
@@ -471,7 +493,9 @@ private struct RecordingRow: View {
         }
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(BrandUI.gold.opacity(isSelected ? 0.25 : 0), lineWidth: 1)
+                .stroke(
+                    BrandUI.gold.opacity(isSelected ? (showsFocus ? 0.7 : 0.25) : 0),
+                    lineWidth: isSelected && showsFocus ? 1.5 : 1)
         }
         .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .onHover { isHovering = $0 }

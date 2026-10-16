@@ -176,6 +176,8 @@ struct MeetingRecordBar: View {
         .buttonStyle(.plain)
         .help(state.isLiveTranscriptShown ? "hide the live transcript window" : "show the live transcript window")
         .accessibilityLabel("live transcript window")
+        .accessibilityValue(state.isLiveTranscriptShown ? "shown" : "hidden")
+        .accessibilityAddTraits(state.isLiveTranscriptShown ? .isSelected : [])
     }
 }
 
@@ -280,8 +282,9 @@ private struct RecordingClock: View {
                 .contentTransition(.numericText())
                 .animation(.snappy(duration: 0.25), value: clock)
                 .fixedSize()
+                .accessibilityLabel("recording time")
+                .accessibilityValue(clock)
         }
-        .accessibilityLabel("recording time")
     }
 }
 
@@ -440,6 +443,10 @@ private struct SourceChip: View {
         .frame(height: 24)
         .overlay(Capsule().stroke(isWrong ? BrandUI.attention.opacity(0.5) : Color.white.opacity(0.12), lineWidth: 1))
         .help(isWrong ? "the mac could not be heard last time" : "heard while recording")
+        // the colour says it to the eye; this says it to voiceover.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+        .accessibilityValue(isWrong ? "could not be heard last time" : "")
     }
 }
 
