@@ -301,6 +301,7 @@ final class DictationCoordinator: ObservableObject {
     /// held while the mic is live (`keepDisplayAwake`).
     private var displayAwakeActivity: (any NSObjectProtocol)?
     private var aboutWindowController: AboutWindowController?
+    private var meetingsWindowController: MeetingsWindowController?
     #if DEBUG
     private var lampLabWindowController: LampLabWindowController?
     #endif
@@ -329,7 +330,7 @@ final class DictationCoordinator: ObservableObject {
     /// built on first use: a mac that only dictates never pays for meetings.
     let meetings: LazyMeetings
     /// made by the first meeting, like the panel that shows it.
-    private lazy var liveTranscript = LiveTranscriptModel(elapsed: .zero)
+    private(set) lazy var liveTranscript = LiveTranscriptModel(elapsed: .zero)
     @Published private(set) var meetingModelDownloads: [SpeechModel: Double] = [:]
     @Published private(set) var isLiveTranscriptShown = false
     /// `record a meeting` was pressed before its model was on disk, and is
@@ -642,10 +643,17 @@ final class DictationCoordinator: ObservableObject {
         meetingsRevision += 1
     }
 
-    /// the meetings window, on `select` if given. the window itself is
-    /// phase c's; until then this is the seam the panel calls.
+    /// the meetings window, made the first time and kept, on `select` if
+    /// given.
     func openMeetings(select: URL? = nil) {
-        // MEETINGS-WINDOW: filled in by the meetings window.
+        let controller: MeetingsWindowController
+        if let meetingsWindowController {
+            controller = meetingsWindowController
+        } else {
+            controller = MeetingsWindowController(coordinator: self)
+            meetingsWindowController = controller
+        }
+        controller.present(select: select)
     }
 
     func openAbout() {

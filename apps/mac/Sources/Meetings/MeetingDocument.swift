@@ -32,8 +32,13 @@ struct MeetingDocument: Equatable, Sendable {
     /// name with "call" after it (`zoom call`), or just `meeting` when there
     /// was no call app.
     var displayTitle: String {
-        if let title = header.title { return title }
-        return header.app == "meeting" ? "meeting" : "\(header.app) call"
+        header.title ?? Self.untitled(app: header.app)
+    }
+
+    /// what a meeting nobody named is called, for a list that has only
+    /// read the top of its file.
+    static func untitled(app: String) -> String {
+        app == "meeting" ? "meeting" : "\(app) call"
     }
 
     /// Who spoke, in the order they first did, across every session.
