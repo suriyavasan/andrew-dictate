@@ -302,6 +302,48 @@ final class MeetingCoordinatorTests: XCTestCase {
         XCTAssertEqual(c.liveLines.first?.isConfirmed, true)
     }
 
+    /// What was queued when you pressed stop is decoded while the meeting
+    /// is written out, and reaches the live view: it was said in the
+    /// meeting, and the view stays up until the file is saved. Once the
+    /// next meeting has started, the view is that one's, and the last
+    /// meeting's late lines stay out of it.
+    func testLinesDecodedAfterTheStopStillReachTheLiveView() async throws {
+        let first = FakeTranscriber(finalTurns: [
+            .init(speaker: .you, at: .seconds(1), text: "the first meeting")])
+        let second = FakeTranscriber()
+        first.holds = true
+        transcribers.lineUp(first, second)
+        let c = coordinator(starting: [
+            Date(timeIntervalSince1970: 1_787_000_000),
+            Date(timeIntervalSince1970: 1_787_003_600),
+        ])
+        var told: [String] = []
+        c.onLine = { told.append($0.text) }
+
+        c.start()
+        await source.awaitStart()
+        source.send(loud(at: .zero))
+        await settle()
+        c.stop()
+        await held(first)
+        first.emit(.init(speaker: .you, at: .seconds(1), text: "said just before the stop", isConfirmed: true))
+        await settle()
+
+        XCTAssertEqual(c.liveLines.map(\.text), ["said just before the stop"])
+        XCTAssertEqual(told, ["said just before the stop"])
+
+        c.start()
+        await source.awaitStart()
+        first.emit(.init(speaker: .you, at: .seconds(2), text: "late, after the next began", isConfirmed: true))
+        await settle()
+        XCTAssertEqual(c.liveLines, [], "the next meeting's view starts empty")
+        XCTAssertEqual(told, ["said just before the stop"])
+
+        first.release()
+        c.stop()
+        await c.untilWrittenOut()
+    }
+
     func testAnOrphanedSpoolBecomesARecoveredTranscript() async throws {
         let spool = MeetingSpool(root: dir.appendingPathComponent("spool"))
         let handle = try spool.begin(.init(

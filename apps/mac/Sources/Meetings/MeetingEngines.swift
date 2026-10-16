@@ -24,18 +24,46 @@ enum MeetingEngines {
         if !FluidDiarizer.isOnDisk {
             Task.detached(priority: .utility) { await fetchSpeakerSplit() }
         }
+        // the model kept between meetings, loaded already if anything
+        // warmed it: a meeting, its reading again, a recovery and a
+        // transcribe again all read with the one model.
+        let engine = await kept.engine(for: model)
+        return stretches(engine, ceiling: ceiling(of: model))
+    }
+
+    /// The meeting model kept between meetings, for the whole app.
+    private static let kept = WarmMeetingModel(make: { engine(for: $0) })
+
+    /// Starts loading the meeting model before anyone presses record: the
+    /// meetings window opened, a call heard beginning. A model that is not
+    /// on this mac is not asked for.
+    static func warm(_ model: SpeechModel) {
+        guard ModelFiles.isInstalled(model) else { return }
+        Task { await kept.warm(model) }
+    }
+
+    /// The engine a meeting reads `model` with, not loaded. Whisper without
+    /// its prewarm: a meeting's words wait on the load (`WhisperModel`).
+    static func engine(for model: SpeechModel) -> any StretchEngine {
         switch model.family {
-        case .parakeet:
-            return stretches(ParakeetStretchEngine(model: model), ceiling: ParakeetStretchEngine.ceiling)
-        case .whisper:
-            return stretches(WhisperModel(model, translates: model.translatesToEnglish), ceiling: WhisperModel.ceiling)
-        case .whistle:
-            return stretches(WhistleModel(), ceiling: WhistleModel.ceiling)
+        case .parakeet: ParakeetStretchEngine(model: model)
+        case .whisper: WhisperModel(model, translates: model.translatesToEnglish, prewarm: false)
+        case .whistle: WhistleModel()
         }
     }
 
-    /// A meeting heard a stretch at a time, both sides by one voice model
-    /// loaded for this meeting and let go with it.
+    /// The longest stretch `model` is handed.
+    static func ceiling(of model: SpeechModel) -> Duration {
+        switch model.family {
+        case .parakeet: ParakeetStretchEngine.ceiling
+        case .whisper: WhisperModel.ceiling
+        case .whistle: WhistleModel.ceiling
+        }
+    }
+
+    /// A meeting heard a stretch at a time, both sides by the kept engine
+    /// and a voice model loaded for this meeting and let go with it — a
+    /// megabyte, in a moment.
     private static func stretches(_ engine: any StretchEngine, ceiling: Duration) -> StretchTranscriber {
         let voice = SileroVoice()
         return StretchTranscriber(engine: engine, ceiling: ceiling, detector: { voice.detector() })

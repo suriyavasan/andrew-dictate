@@ -51,6 +51,13 @@ struct MeetingThresholds: Sendable {
     /// or a try at the tap. Nothing at all by then, and the mic is the
     /// suspect. Provisional.
     var firstChunkAllowance: Duration = .seconds(3)
+    /// How long a thin transcript is read again from its spool at the stop
+    /// before the reading is given up. The meeting was read as it went;
+    /// reading all of it again is a net, and the stop must not wait an hour
+    /// on it. Past this the file is written from the live reading, marked
+    /// incomplete with the reason, and its audio is kept for a transcribe
+    /// again. Provisional.
+    var readingAgainFor: Duration = .seconds(120)
 
     /// Tries in a row before the meeting stops waiting on the tap.
     var rebuildAttempts: Int { rebuildSpacing.count + 1 }
@@ -789,6 +796,7 @@ final class MeetingCoordinator: ObservableObject {
     private func abandonKeepingSpool(_ meeting: Meeting) {
         guard current === meeting else { return }
         let recording = letGo(of: meeting, at: elapsed)
+        meeting.lines?.cancel()
         _ = closeTheTap(of: meeting)
         keepMeetingRecord?(MeetingRecord(
             .modelFailed, app: meeting.app, model: meeting.preferences.model,
@@ -804,7 +812,9 @@ final class MeetingCoordinator: ObservableObject {
     private func letGo(of meeting: Meeting, at end: Duration) -> MeetingSession.Recording? {
         current = nil
         meeting.capture?.cancel()
-        meeting.lines?.cancel()
+        // the lines are not let go: what the transcriber decodes while the
+        // meeting is written out still reaches the live view, which stays
+        // up until the file is saved. they end with the transcriber.
         meeting.watchdog?.cancel()
         meeting.startWatch?.cancel()
         // a rebuild still waiting its turn is cut short; one already
@@ -1503,6 +1513,9 @@ final class MeetingCoordinator: ObservableObject {
         meeting.lines = Task { [weak self] in
             for await line in transcriber.lines {
                 guard let self, !Task.isCancelled else { break }
+                // a meeting stopped is still decoding what it had queued;
+                // once the next has started, the view is the next one's.
+                guard current == nil || current === meeting else { continue }
                 if let i = liveLines.firstIndex(where: { $0.id == line.id }) {
                     liveLines[i] = line
                 } else {
@@ -1524,6 +1537,7 @@ final class MeetingCoordinator: ObservableObject {
         nothingKept why: MeetingRecord.NothingKept
     ) async {
         guard let recording, let handle = meeting.handle else {
+            meeting.lines?.cancel()
             if let handle = meeting.handle { spool.discard(handle) }
             keepMeetingRecord?(MeetingRecord(
                 .nothingKept(why),
@@ -1543,6 +1557,8 @@ final class MeetingCoordinator: ObservableObject {
         let live = Reading(
             turns: await meeting.transcriber?.finish() ?? [],
             tally: await meeting.transcriber?.decodeTally())
+        // its last line is out: `finish` ended the stream the lines come in.
+        meeting.lines?.cancel()
         meeting.transcriber = nil
         // closed before anything reads it back.
         meeting.audioFile = nil
@@ -1650,19 +1666,28 @@ final class MeetingCoordinator: ObservableObject {
     }
 
     /// The whole spool, through a transcriber of its own, or nil when that
-    /// could not be done: the model would not come, or it threw.
+    /// could not be done: the model would not come, it threw, or it took
+    /// longer than `readingAgainFor`, when it is cancelled and let go.
     private func readAgain(
         _ handle: MeetingSpool.Handle,
         model: SpeechModel,
         clock: SpoolClock
     ) async -> Reading? {
+        let makeTranscriber = makeTranscriber
+        let url = handle.audioURL
+        let readSpool = readSpool
         do {
-            let audio = try await read(handle.audioURL)
-            let transcriber = try await makeTranscriber(model)
-            let turns = try await transcriber.transcribe(you: audio.you, them: audio.them)
+            let reading = try await Deadline.race(thresholds.readingAgainFor) {
+                let audio = try await Task.detached(priority: .utility) {
+                    try readSpool(url)
+                }.value
+                let transcriber = try await makeTranscriber(model)
+                let turns = try await transcriber.transcribe(you: audio.you, them: audio.them)
+                return (turns: turns, tally: await transcriber.decodeTally())
+            }
             return Reading(
-                turns: clock.onTheMeetingsClock(turns),
-                tally: await transcriber.decodeTally())
+                turns: clock.onTheMeetingsClock(reading.turns),
+                tally: reading.tally)
         } catch {
             logger.error("could not read a thin meeting again: \(error.localizedDescription, privacy: .public)")
             return nil

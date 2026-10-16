@@ -256,6 +256,9 @@ actor StretchTranscriber: MeetingTranscriber {
             youDetector: makeDetector(), themDetector: makeDetector(), ceiling: ceiling)
         var steps = SpoolSteps(length: Self.spoolChunk)
         for try await block in blocks {
+            // a reading given up on (`readingAgainFor`) stops here, rather
+            // than reading on beside the next meeting with its model.
+            try Task.checkCancellation()
             steps.add(block)
             while let step = steps.next() {
                 await hear(step, in: &spool)

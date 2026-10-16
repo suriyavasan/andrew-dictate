@@ -654,6 +654,18 @@ final class DictationCoordinator: ObservableObject {
             meetingsWindowController = controller
         }
         controller.present(select: select)
+        // the window is where meetings are recorded from: the model starts
+        // loading now, so a meeting started here is read as it is said.
+        warmMeetingModel()
+    }
+
+    /// the meeting model, loading before record is pressed, for a mac set
+    /// up for meetings (`WarmMeetingModel`). it is over a minute for
+    /// whisper large; a meeting started before it is in is read from when
+    /// it is.
+    private func warmMeetingModel() {
+        guard settings.meetingsSetUp else { return }
+        MeetingEngines.warm(settings.meetingModel)
     }
 
     func openAbout() {
@@ -2582,6 +2594,10 @@ extension DictationCoordinator {
     /// suggestion by itself (ADR 0047).
     private func wire(_ monitor: CallMonitor) {
         monitor.onSuggestion = { [weak self] suggestion in
+            // a call began: it may be recorded in a moment, and the model
+            // should not still be loading when it is. loading is not acting
+            // on the suggestion — nothing records until `record`.
+            if case .record = suggestion { self?.warmMeetingModel() }
             self?.ask(MeetingQuestion(suggestion))
         }
         monitor.onCallsChanged = { [weak self] in
