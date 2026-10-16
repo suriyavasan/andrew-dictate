@@ -206,7 +206,12 @@ private final class TransparencyView: NSView {
             return
         }
         window.isOpaque = false
-        window.backgroundColor = .clear
+        // all but clear, never clear: over a window whose background is
+        // fully clear, a NavigationSplitView paints above the title bar and
+        // takes its clicks — the meetings window's red button looked dimmed
+        // and did nothing. one percent of black puts the buttons back on
+        // top, and the glass looks the same.
+        window.backgroundColor = NSColor.black.withAlphaComponent(0.01)
     }
 }
 
