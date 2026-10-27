@@ -188,6 +188,7 @@ targets:
       - Sources/Onboarding/OnboardingFlow.swift
       - Sources/Permissions/SetupGate.swift
       - Sources/Permissions/EnginePrewarmGate.swift
+      - Sources/Permissions/StaleGrantRepair.swift
       - Sources/Settings/SetupHealth.swift
       - Sources/Hotkey/HotkeyBinding.swift
       - Sources/Hotkey/MeetingShortcut.swift

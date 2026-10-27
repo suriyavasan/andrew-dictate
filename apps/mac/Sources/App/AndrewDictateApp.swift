@@ -37,6 +37,10 @@ final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
         guard Capabilities.current.refusesASecondInstance,
               let other = Self.otherRunningCopy()
         else {
+            // before the coordinator reads the permissions: a row left by a
+            // differently signed copy reads as "granted" in system settings
+            // and as nothing to us (StaleGrantRepair).
+            StaleGrantRepair.runAtLaunch()
             return
         }
         // it cannot say anything itself — it is about to be gone — so the
