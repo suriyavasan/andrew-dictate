@@ -38,11 +38,19 @@ actor WhisperModel: StretchEngine {
 
     private let model: SpeechModel
     private let translates: Bool
+    private let prewarm: Bool
     private var whisper: WhisperKit?
 
-    init(_ model: SpeechModel, translates: Bool) {
+    /// `prewarm` has WhisperKit load each part and let it go before loading
+    /// it for good, which keeps the peak of the load lower and makes it
+    /// longer. Measured on large-v3 (2026-10-16, an M-series mac, the model
+    /// already compiled once): 64 to 67 s without it, 88 s with it, every
+    /// time, the second load no faster than the first. A meeting's words
+    /// wait on the load, so a meeting does without it.
+    init(_ model: SpeechModel, translates: Bool, prewarm: Bool = true) {
         self.model = model
         self.translates = translates
+        self.prewarm = prewarm
     }
 
     func load() async throws {
@@ -78,7 +86,7 @@ actor WhisperModel: StretchEngine {
             tokenizerFolder: tokenizerFolder,
             verbose: false,
             logLevel: .error,
-            prewarm: true,
+            prewarm: prewarm,
             load: true,
             download: false))
     }

@@ -162,6 +162,11 @@ final class HUDViewModel: ObservableObject {
     /// anywhere else on the pill. whoever asked decides what each means.
     var onPillButton: (@MainActor () -> Void)?
     var onPillElsewhere: (@MainActor () -> Void)?
+    /// the rewrite's picker or its wait (fn+⌃), under any sentence: a
+    /// pill that speaks goes over it, and it is back when the pill goes.
+    @Published private(set) var rewritePill: HUDRewritePill?
+    /// a button on the picker, by its place in the row.
+    var onChoice: (@MainActor (Int) -> Void)?
     @Published private(set) var layout: HUDLayout
     @Published private(set) var presentationGeneration = 0
     /// shaped + thermally smoothed loudness: fast attack, slow release —
@@ -208,6 +213,14 @@ final class HUDViewModel: ObservableObject {
         if let feedbackMessage {
             return .text(feedbackMessage, button: pillButton?.title)
         }
+        switch rewritePill {
+        case let .picking(buttons):
+            return .choices(buttons)
+        case let .working(message):
+            return .text(message)
+        case nil:
+            break
+        }
 
         switch state {
         case .idle, .recording, .transcribing:
@@ -242,6 +255,22 @@ final class HUDViewModel: ObservableObject {
             self.state = state
             feedbackMessage = nil
             pillButton = nil
+            // the rewrite lives inside one sentence's writing-out; any
+            // other state is past it.
+            if state != .transcribing {
+                rewritePill = nil
+            }
+            presentationGeneration += 1
+        }
+    }
+
+    /// the rewrite's picker, its wait, or nil when it is done.
+    func showRewrite(_ pill: HUDRewritePill?) {
+        guard pill != rewritePill else {
+            return
+        }
+        withAnimation(Self.morph) {
+            rewritePill = pill
             presentationGeneration += 1
         }
     }
@@ -413,6 +442,26 @@ struct HUDView: View {
                         onElsewhere: { viewModel.onPillElsewhere?() }
                     )
                     .glassEffectID(Self.glassID, in: glassNamespace)
+                } else if let rewritePill = viewModel.rewritePill {
+                    switch rewritePill {
+                    case let .picking(buttons):
+                        HUDChoicePill(
+                            buttons: buttons,
+                            size: viewModel.layout.size,
+                            buttonSizes: viewModel.layout.choices ?? [],
+                            titleWidth: viewModel.layout.choiceTitleWidth
+                                ?? HUDLayoutEngine.longestChoiceTitle,
+                            onChoice: { viewModel.onChoice?($0) }
+                        )
+                        .glassEffectID(Self.glassID, in: glassNamespace)
+                    case let .working(message):
+                        HUDTextPill(
+                            message: message,
+                            lineCount: viewModel.layout.lineCount,
+                            size: viewModel.layout.size
+                        )
+                        .glassEffectID(Self.glassID, in: glassNamespace)
+                    }
                 } else if viewModel.meetingLight != .off {
                     meetingLamp(viewModel.meetingLight)
                 } else {
@@ -619,6 +668,86 @@ struct HUDTextPill: View {
             .regular.tint(glassTint),
             in: shape
         )
+    }
+}
+
+/// the rewrite's picker (fn+⌃): the pill's glass with a row of the pill's
+/// own buttons in it, one per style and `as said` last, each with the digit
+/// that picks it. the one it takes when nothing is picked is a shade
+/// brighter, so the default is seen rather than explained.
+struct HUDChoicePill: View {
+    let buttons: [HUDChoiceButton]
+    let size: CGSize
+    let buttonSizes: [CGSize]
+    let titleWidth: CGFloat
+    var onChoice: (Int) -> Void = { _ in }
+
+    var body: some View {
+        HStack(spacing: HUDLayoutEngine.choiceGap) {
+            ForEach(Array(buttons.enumerated()), id: \.offset) { index, button in
+                Button {
+                    onChoice(index)
+                } label: {
+                    HStack(spacing: HUDLayoutEngine.keyGap) {
+                        Text(button.key)
+                            .font(Font(HUDLayoutEngine.keyFont))
+                            .foregroundStyle(BrandUI.goldPale.opacity(0.55))
+                        Text(button.title)
+                            .font(Font(HUDLayoutEngine.buttonFont))
+                            .foregroundStyle(BrandUI.goldPale)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .frame(maxWidth: titleWidth)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .buttonStyle(
+                    HUDChoiceButtonStyle(isDefault: button.isDefault)
+                )
+                .frame(
+                    width: index < buttonSizes.count
+                        ? buttonSizes[index].width
+                        : nil,
+                    height: HUDLayoutEngine.buttonHeight
+                )
+                .accessibilityLabel(
+                    button.isDefault
+                        ? "\(button.title), picked in a moment, key \(button.key)"
+                        : "\(button.title), key \(button.key)"
+                )
+            }
+        }
+        .padding(.horizontal, HUDLayoutEngine.buttonInset)
+        .frame(width: size.width, height: size.height)
+        .glassEffect(
+            .regular.tint(HUDTextPill.darkTint),
+            in: RoundedRectangle(
+                cornerRadius: HUDLayoutEngine.pillCornerRadius,
+                style: .continuous
+            )
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("rewrite it how?")
+    }
+}
+
+/// a choice on the picker: the pill button's capsule, a little brighter for
+/// the default.
+struct HUDChoiceButtonStyle: ButtonStyle {
+    let isDefault: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Capsule())
+            .glassEffect(
+                .regular
+                    .tint(BrandUI.goldPale.opacity(isDefault ? 0.24 : 0.08))
+                    .interactive(),
+                in: Capsule()
+            )
+            .opacity(configuration.isPressed ? 0.72 : 1)
     }
 }
 

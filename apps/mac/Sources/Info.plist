@@ -26,6 +26,8 @@
 	<string>26.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>andrew dictate hears what this mac plays only while you record a meeting, so the other side of the call is in the transcript.</string>
 	<key>NSDocumentsFolderUsageDescription</key>
 	<string>andrew dictate writes your meeting transcripts here.</string>
 	<key>NSHumanReadableCopyright</key>

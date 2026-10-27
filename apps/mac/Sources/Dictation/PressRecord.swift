@@ -69,6 +69,8 @@ struct PressRecord: Equatable, Sendable, Codable {
         var samplesReady: Int?
         var transcriptReady: Int?
         var cleaned: Int?
+        /// the rewrite answered (fn+⌃): the pick and the model's wait.
+        var rewritten: Int?
         var pastePosted: Int?
         var pasteCompleted: Int?
         var ended: Int?
@@ -97,6 +99,10 @@ struct PressRecord: Equatable, Sendable, Codable {
     var retry: Bool
     /// the longest the main thread stalled while this press was in flight.
     var mainStallMs: Int?
+    /// a rewrite press (fn+⌃): which style, by kind — `custom` for one of
+    /// yours, never its name — and how it went. nil for every other press.
+    var rewriteStyle: String? = nil
+    var rewriteResult: String? = nil
 }
 
 // MARK: - the press in flight
@@ -116,6 +122,7 @@ extension PressRecord {
         var samplesReady: Instant?
         var transcriptReady: Instant?
         var cleaned: Instant?
+        var rewritten: Instant?
         var pastePosted: Instant?
         var pasteCompleted: Instant?
         /// held until the end so the peak is measured after the paste, not
@@ -126,6 +133,8 @@ extension PressRecord {
         var micChanged = false
         var timedOut = false
         var mainStall: Duration?
+        var rewriteStyle: String?
+        var rewriteResult: String?
 
         init(keyDown: Instant, startedAt: Date, retry: Bool = false) {
             self.keyDown = keyDown
@@ -151,6 +160,7 @@ extension PressRecord {
                     samplesReady: offset(samplesReady),
                     transcriptReady: offset(transcriptReady),
                     cleaned: offset(cleaned),
+                    rewritten: offset(rewritten),
                     pastePosted: offset(pastePosted),
                     pasteCompleted: offset(pasteCompleted),
                     ended: offset(ended)
@@ -160,7 +170,9 @@ extension PressRecord {
                 micChanged: micChanged,
                 timedOut: timedOut,
                 retry: retry,
-                mainStallMs: mainStall.map(Self.milliseconds)
+                mainStallMs: mainStall.map(Self.milliseconds),
+                rewriteStyle: rewriteStyle,
+                rewriteResult: rewriteResult
             )
         }
 
@@ -205,7 +217,15 @@ extension PressRecord {
                 forKey: .timedOut
             ) ?? false,
             retry: try container.decode(Bool.self, forKey: .retry),
-            mainStallMs: try container.decodeIfPresent(Int.self, forKey: .mainStallMs)
+            mainStallMs: try container.decodeIfPresent(Int.self, forKey: .mainStallMs),
+            rewriteStyle: try container.decodeIfPresent(
+                String.self,
+                forKey: .rewriteStyle
+            ),
+            rewriteResult: try container.decodeIfPresent(
+                String.self,
+                forKey: .rewriteResult
+            )
         )
     }
 }

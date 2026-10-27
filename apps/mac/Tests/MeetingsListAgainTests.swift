@@ -72,6 +72,19 @@ final class MeetingsListAgainTests: XCTestCase {
         XCTAssertEqual(model.again(for: zoom), .none)
     }
 
+    /// kept audio is one recording's. a meeting recorded into again has a
+    /// second session the audio does not cover, and reading it again would
+    /// replace both sessions with the words of one: no action at all.
+    func testAMeetingRecordedIntoMoreThanOnceOffersNothing() async throws {
+        let standUp = meeting("2026-10-01-1402-zoom.md", sessions: 2)
+        try await keepAudio(for: standUp)
+        let model = list([standUp])
+
+        XCTAssertEqual(model.again(for: standUp), .none)
+        model.transcribeAgain(standUp, with: .whisperLargeV3)
+        XCTAssertTrue(started.isEmpty)
+    }
+
     // MARK: - when it cannot be done now
 
     func testItWaitsWhileAMeetingIsBeingRecorded() async throws {
@@ -159,7 +172,7 @@ final class MeetingsListAgainTests: XCTestCase {
             load: { meetings })
     }
 
-    private func meeting(_ name: String) -> MeetingSummary {
+    private func meeting(_ name: String, sessions: Int = 1) -> MeetingSummary {
         MeetingSummary(
             fileURL: dir.appendingPathComponent("docs/meetings/2026-10/\(name)"),
             app: "zoom",
@@ -167,7 +180,8 @@ final class MeetingsListAgainTests: XCTestCase {
             duration: .seconds(600),
             complete: true,
             gapCount: 0,
-            recovered: false)
+            recovered: false,
+            sessions: sessions)
     }
 
     /// two seconds of its audio, kept until you delete it.

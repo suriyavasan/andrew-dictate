@@ -1326,6 +1326,221 @@ final class UtteranceMachineTests: XCTestCase {
         }
     }
 
+    // MARK: - the rewrite (fn+⌃)
+
+    /// ⌃ during the take hands the cleaned words to the rewrite, and what
+    /// comes back is what lands, is kept and is counted — and the learner
+    /// is not told, because the words are the model's, not the engine's.
+    func testARewritePressPastesTheModelsWords() async {
+        let m = machine()
+        engine.reply = .success("the build failed")
+        var asked: [String] = []
+        m.rewrite = { text in
+            asked.append(text)
+            return .rewritten("Heads up: the build failed.", style: "professional")
+        }
+
+        m.keyDown()
+        await pass(.milliseconds(500))
+        m.rewriteModifierPressed()
+        await pass(.milliseconds(500))
+        m.keyUp()
+        await settle { self.inserter.inserted.count == 1 }
+
+        XCTAssertEqual(asked, ["The build failed."])
+        XCTAssertEqual(inserter.inserted, ["Heads up: the build failed."])
+        XCTAssertEqual(completions, [.rewritten])
+        XCTAssertEqual(
+            archived,
+            [.init(heard: "the build failed", inserted: "Heads up: the build failed.")]
+        )
+        XCTAssertFalse(events.contains { if case .delivered = $0 { true } else { false } })
+        XCTAssertEqual(outcomes, [.delivered])
+        XCTAssertEqual(presses.first?.rewriteStyle, "professional")
+        XCTAssertEqual(presses.first?.rewriteResult, "rewritten")
+        XCTAssertNotNil(presses.first?.stages.rewritten)
+        XCTAssertEqual(pills, [])
+    }
+
+    /// without the modifier a take is a take: the rewrite is never asked.
+    func testAPressWithoutTheModifierIsNotRewritten() async {
+        let m = machine()
+        engine.reply = .success("the build failed")
+        var asked = 0
+        m.rewrite = { _ in
+            asked += 1
+            return .asSaid
+        }
+
+        // ⌃ before the press belongs to no take.
+        m.rewriteModifierPressed()
+        await hold(m, for: .seconds(1))
+        await settle { self.inserter.inserted.count == 1 }
+
+        XCTAssertEqual(asked, 0)
+        XCTAssertEqual(inserter.inserted, ["The build failed."])
+        XCTAssertEqual(completions, [.delivered])
+        XCTAssertNil(presses.first?.rewriteResult)
+    }
+
+    /// the modifier says "this take is a rewrite" once: the first time is
+    /// the coordinator's cue to start watching the pointer, and ⌃ held
+    /// through every later flags change must not restart the watch.
+    func testTheModifierMarksATakeOnceAndOnlyWhileRecording() async {
+        let m = machine()
+        engine.reply = .success("the build failed")
+        m.rewrite = { _ in .asSaid }
+
+        XCTAssertFalse(m.rewriteModifierPressed())
+        m.keyDown()
+        await pass(.milliseconds(500))
+        XCTAssertTrue(m.rewriteModifierPressed())
+        XCTAssertFalse(m.rewriteModifierPressed())
+        await pass(.milliseconds(500))
+        m.keyUp()
+        await settle { self.inserter.inserted.count == 1 }
+        await pass(.seconds(1))
+
+        m.keyDown()
+        await pass(.milliseconds(500))
+        XCTAssertTrue(m.rewriteModifierPressed())
+        await pass(.milliseconds(500))
+        m.keyUp()
+        await settle { self.inserter.inserted.count == 2 }
+    }
+
+    /// with the rewrite off, ⌃ means nothing, as it always has.
+    func testTheModifierMeansNothingWhileTheRewriteIsOff() async {
+        let m = machine()
+        engine.reply = .success("the build failed")
+
+        m.keyDown()
+        m.rewriteModifierPressed()
+        await pass(.seconds(1))
+        m.keyUp()
+        await settle { self.inserter.inserted.count == 1 }
+
+        XCTAssertEqual(completions, [.delivered])
+    }
+
+    /// a rewrite that fails must not look like one that worked: your words
+    /// land as said, and the pill says why once they have.
+    func testAFailedRewritePastesWhatYouSaidAndSaysWhy() async {
+        let m = machine()
+        engine.reply = .success("the build failed")
+        m.rewrite = { _ in .failed(reason: "no internet", style: "auto") }
+
+        m.keyDown()
+        m.rewriteModifierPressed()
+        await pass(.seconds(1))
+        m.keyUp()
+        await settle { !self.pills.isEmpty }
+
+        XCTAssertEqual(inserter.inserted, ["The build failed."])
+        XCTAssertEqual(
+            pills,
+            [Pill("couldn't rewrite — no internet. pasted what you said.", 3.2)]
+        )
+        XCTAssertEqual(presses.first?.rewriteResult, "failed")
+        XCTAssertEqual(presses.first?.rewriteStyle, "auto")
+    }
+
+    /// `as said` is the cleaner's words, and nothing to say about it.
+    func testAsSaidPastesTheCleanersWords() async {
+        let m = machine()
+        engine.reply = .success("the build failed")
+        m.rewrite = { _ in .asSaid }
+
+        m.keyDown()
+        m.rewriteModifierPressed()
+        await pass(.seconds(1))
+        m.keyUp()
+        await settle { self.inserter.inserted.count == 1 }
+
+        XCTAssertEqual(inserter.inserted, ["The build failed."])
+        XCTAssertEqual(pills, [])
+        XCTAssertEqual(presses.first?.rewriteResult, "as-said")
+    }
+
+    /// the picker is up or the model is thinking: a press is refused out
+    /// loud, never taken for a hung engine, however long it has been.
+    func testAPressWhileRewritingIsRefusedNotDroppedAsHung() async {
+        let m = machine()
+        engine.reply = .success("first thought")
+        var answer: CheckedContinuation<RewriteOutcome, Never>?
+        m.rewrite = { _ in
+            await withCheckedContinuation { answer = $0 }
+        }
+
+        m.keyDown()
+        m.rewriteModifierPressed()
+        await pass(.seconds(1))
+        m.keyUp()
+        await settle { answer != nil }
+        await pass(.seconds(10))
+
+        m.keyDown()
+        await settle { !self.pills.isEmpty }
+        XCTAssertEqual(pills, [Pill("still rewriting the last one", 1.4)])
+        XCTAssertEqual(mic.starts, 1)
+        XCTAssertFalse(events.contains(.engineSuspect))
+
+        answer?.resume(returning: .rewritten("A first thought.", style: "auto"))
+        await settle { self.inserter.inserted.count == 1 }
+        XCTAssertEqual(inserter.inserted, ["A first thought."])
+        XCTAssertEqual(outcomes, [.refused(.stillFinishing), .delivered])
+    }
+
+    /// esc while the picker is up throws the take away, as esc always has.
+    func testEscWhileRewritingThrowsTheTakeAway() async {
+        let m = machine()
+        engine.reply = .success("never mind")
+        var asked = false
+        var wasCancelled = false
+        m.rewrite = { _ in
+            asked = true
+            await withTaskCancellationHandler {
+                try? await Task.sleep(for: .seconds(30))
+            } onCancel: {
+                Task { @MainActor in wasCancelled = true }
+            }
+            return .asSaid
+        }
+
+        m.keyDown()
+        m.rewriteModifierPressed()
+        await pass(.seconds(1))
+        m.keyUp()
+        await settle { asked }
+
+        XCTAssertTrue(m.escape())
+        await settle { wasCancelled }
+        XCTAssertEqual(m.state, .idle)
+        XCTAssertEqual(inserter.inserted, [])
+        XCTAssertEqual(completions, [.cancelled])
+        XCTAssertEqual(outcomes, [.cancelled])
+    }
+
+    /// words on their way to the clipboard because the mac locked have
+    /// nobody at the picker: they go as said.
+    func testATakeCopiedForTheLockIsNotRewritten() async {
+        let m = machine()
+        engine.reply = .success("the build failed")
+        var asked = 0
+        m.rewrite = { _ in
+            asked += 1
+            return .asSaid
+        }
+
+        m.keyDown()
+        m.rewriteModifierPressed()
+        await pass(.seconds(1))
+        m.captureInterrupted(.systemPaused)
+        await settle { !self.inserter.copied.isEmpty }
+
+        XCTAssertEqual(asked, 0)
+    }
+
     // MARK: - helpers
 
     private var presses: [PressRecord] {

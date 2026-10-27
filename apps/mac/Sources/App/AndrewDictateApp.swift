@@ -95,216 +95,17 @@ struct AndrewDictateApp: App {
         return "Andrew Dictate"
     }
 
-    /// `record a meeting`, and under it `record with ▸` when another meeting
-    /// model is on this mac: the models other than the default, for this one
-    /// meeting. the submenu is the same menu's second line, so it comes and
-    /// goes with it and never shows while a meeting records.
-    @ViewBuilder
-    private var recordAMeeting: some View {
-        Button("record a meeting") {
-            coordinator.startMeeting()
-        }
-
-        let others = coordinator.recordWithChoices
-        if !others.isEmpty {
-            Menu("record with") {
-                ForEach(others, id: \.model) { choice in
-                    Button(choice.title) {
-                        coordinator.startMeeting(model: choice.model)
-                    }
-                }
-            }
-        }
-    }
-
     var body: some Scene {
         MenuBarExtra {
-            // two menu bar icons that look identical is a bad time. the badge
-            // itself stays untouched — the logo is the logo (ADR 0013) — so the
-            // marker goes in the menu instead.
-            if Capabilities.current.announcesItself {
-                Text("dev build — \(AppIdentity.bundleID)")
-                    .foregroundStyle(.secondary)
-                    .disabled(true)
-                Divider()
-            }
-
-            // Only when it is *not* ready. A line reading "ready" forever is
-            // furniture; a line that appears when the model is still loading
-            // is the one thing the badge cannot tell you, because prewarming
-            // and idle draw the same icon.
-            if coordinator.state != .idle {
-                Text(coordinator.state.displayName)
-                    .foregroundStyle(.secondary)
-                    .disabled(true)
-            }
-
-            // what the meeting is doing, in words, first (ticket 27): getting
-            // ready, recording and its clock, a problem until it clears,
-            // writing it out — or an unsaved recording a crash left, being
-            // written out at launch. the badge and the lamp read the same
-            // phase. after a save there is none, and `show last meeting in
-            // finder` below leads for ten minutes.
-            if let line = coordinator.meetings.phase.menuLine(
-                elapsed: coordinator.meetings.elapsed
-            ) {
-                Text(line)
-                    .foregroundStyle(.secondary)
-                    .disabled(true)
-            }
-
-            // a meeting owns the mic and the menu while it runs (ADR 0023):
-            // the stop and the live view, from the press, getting ready
-            // included — a stop then keeps the words, because the file waits
-            // for the model. dictation's row goes, because dictation is
-            // refused until you stop.
-            if coordinator.meetings.isRecording {
-                Button("stop recording") {
-                    coordinator.stopMeeting()
-                }
-                .keyboardShortcut(".", modifiers: [.command, .shift])
-
-                Button(
-                    coordinator.isLiveTranscriptShown
-                        ? "hide live transcript"
-                        : "live transcript"
-                ) {
-                    coordinator.toggleLiveTranscript()
-                }
-            } else {
-                // a call is on and nothing is recording it (ADR 0047). the
-                // pill offered it once, for fifteen seconds; the menu leads
-                // with it for as long as the call lasts, the way it leads
-                // with a recording while one runs.
-                if let call = coordinator.unrecordedCall {
-                    Text("call in \(call) · not recording")
-                        .foregroundStyle(.secondary)
-                        .disabled(true)
-
-                    recordAMeeting
-                }
-
-                // a meeting leaves one file and no other trace on screen.
-                // for ten minutes it is the thing you came back for; after
-                // that the menu is the hand it was.
-                if coordinator.showsLastMeetingRow {
-                    Button("show last meeting in finder") {
-                        coordinator.revealLastMeeting()
-                    }
-                }
-
-                // The only action here that is time-sensitive: you just
-                // watched it mishear a name. Everything else the app can do
-                // is configuration or curiosity, and lives in settings
-                // (ADR 0030).
-                Button("fix a word…") {
-                    coordinator.openWordFixer()
-                }
-                .disabled(coordinator.lastHeard == nil)
-                // the only disabled case left is an empty archive, and a
-                // dead row with no sentence explains nothing.
-                .help("after your first dictation — this teaches andrew the word it got wrong.")
-
-                // the second time-sensitive row, and it disappears on its
-                // own: the samples of the sentence the model threw on are
-                // still in memory for two minutes.
-                if coordinator.canRetryLastFailure {
-                    Button("try that again") {
-                        coordinator.retryLastFailure()
-                    }
-                }
-
-                // the third, and it goes on its own too: a word the app
-                // just learned from your fixes, taken back in one click for
-                // two minutes. after that it is a row in the dictionary tab.
-                if let learned = coordinator.undoableLearning {
-                    Button("undo learned: \(learned.right)") {
-                        coordinator.undoLearning()
-                    }
-                }
-
-                // nothing starts a recording but the user (ADR 0023, 0047),
-                // and there is no app to pick: a meeting hears the whole mac
-                // (ADR 0049). it is named after the call that is on, if one
-                // is, and then it sits under that call's line above.
-                if coordinator.unrecordedCall == nil {
-                    recordAMeeting
-                }
-
-                // one row, and only while it is needed: the tap would not
-                // open, and the window that can fix it was closed.
-                if coordinator.meetingsNeedAttention {
-                    Button("fix system audio…") {
-                        coordinator.runOnboardingAgain(
-                            scope: .meetingsOnly, openAt: .permissions)
-                    }
-                }
-            }
-
-            Divider()
-
-            SettingsLink {
-                Text("settings…")
-            }
-            .keyboardShortcut(",")
-
-            // Zero rows when everything works, one click when it does not.
-            // SPEC §5 makes settings the router; this is the shortcut for the
-            // case where the user has no reason to go looking.
-            if coordinator.needsAttention {
-                Button("finish setup") {
-                    coordinator.runOnboardingAgain()
-                }
-            }
-
-            if Capabilities.current.canResetInPlace {
-                Button("reset & relaunch (dev)") {
-                    coordinator.resetInPlaceForDevelopment()
-                }
-            }
-
-            #if DEBUG
-            if Capabilities.current.hasLampLab {
-                Button("lamp lab (dev)") {
-                    coordinator.openLampLab()
-                }
-                Button("rehearse the lamp (dev)") {
-                    coordinator.rehearseHUDForDevelopment()
-                }
-            }
-            #endif
-
-            Divider()
-
-            // a newer version is a line here and nothing else (ADR 0043):
-            // no dot on the badge, because a dot means the app needs you
-            // and an old version still works. a meeting owns the menu while
-            // it runs, so the line waits for it. once clicked, the line is
-            // the upgrade's progress: the menu is where the click was.
-            if let line = updateHandOff.state(offering: updates.line),
-               !coordinator.meetings.isRecording {
-                Button(line.title) {
-                    updateHandOff.click(offering: updates.line)
-                }
-                .disabled(!line.isEnabled)
-            }
-
-            // back from settings (reversing part of ADR 0030, recorded in
-            // 0034): the mac-standard home for a menu bar app's identity.
-            Button("about Andrew Dictate") {
-                coordinator.openAbout()
-            }
-
-            // what a friend sends instead of a story: the last fifty
-            // presses and how each ended, never a word of what was said.
-            Button("copy diagnostics") {
-                coordinator.copyDiagnostics()
-            }
-
-            Button("quit Andrew Dictate") {
-                NSApp.terminate(nil)
-            }
-            .keyboardShortcut("q")
+            // a panel, not a menu: control center's tiles, so the switch
+            // and the meeting are a glance and a click (MenuBarPanel).
+            MenuBarPanel(
+                coordinator: coordinator,
+                settings: coordinator.settings,
+                rewrite: coordinator.rewriteSettings,
+                updates: updates,
+                updateHandOff: updateHandOff
+            )
         } label: {
             // the badge wears what the coordinator says it is: a take, a
             // meeting's rim, a call nobody records, or a setup gap.
@@ -333,6 +134,7 @@ struct AndrewDictateApp: App {
                 updateHandOff.isBusy = isBusy
             }
         }
+        .menuBarExtraStyle(.window)
 
         // the system settings scene, not a hand-rolled window: pane chrome,
         // per-pane window title, and dimmed traffic lights come free, and

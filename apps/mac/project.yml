@@ -115,6 +115,10 @@ targets:
         ATSApplicationFontsPath: Fonts
         NSMicrophoneUsageDescription: "andrew dictate uses your microphone for local dictation. with pre-roll on, the mic stays warm while the app runs."
         NSDocumentsFolderUsageDescription: "andrew dictate writes your meeting transcripts here."
+        # a core audio tap is gated by this key: without it macOS never
+        # asks, never lists the app under system audio recording, and the
+        # tap hears silence — "can't hear the mac" with no switch to flip.
+        NSAudioCaptureUsageDescription: "andrew dictate hears what this mac plays only while you record a meeting, so the other side of the call is in the transcript."
 
   AndrewDictateTests:
     type: bundle.unit-test
@@ -192,6 +196,12 @@ targets:
       - Sources/Hotkey/TapLockDetector.swift
       - Sources/Hotkey/TranscribingRepress.swift
       - Sources/Dictation
+      # the rewrite (fn+⌃): prompts, picker, settings and the providers,
+      # every request built and read without the network. the tone pad
+      # is a view and stays with the app.
+      - path: Sources/Rewrite
+        excludes:
+          - TonePadView.swift
       # the learner, the locator and the follower are pure; the AX reader
       # and watcher compile here and are never driven.
       - Sources/Learning

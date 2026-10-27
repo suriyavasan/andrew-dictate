@@ -8,6 +8,10 @@ struct UtteranceTimeline: Equatable, Sendable {
         /// The ⌘V was posted with focus still where we left it. Not a claim
         /// that the target app took the text: nothing here checks that.
         case delivered
+        /// delivered, after a rewrite (fn+⌃). kept like any dictation, and
+        /// never counted toward key-up → inserted: the wait was your pick
+        /// and a model somewhere else, not the app.
+        case rewritten
         case leftOnPasteboard
         case leftOnPasteboardSecure
         case cancelled
@@ -19,7 +23,7 @@ struct UtteranceTimeline: Equatable, Sendable {
         /// other pasteboard hand-off reached you by another route and counts.
         var isKeepable: Bool {
             switch self {
-            case .delivered, .leftOnPasteboard:
+            case .delivered, .rewritten, .leftOnPasteboard:
                 true
             case .leftOnPasteboardSecure, .cancelled:
                 false

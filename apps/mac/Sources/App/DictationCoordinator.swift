@@ -137,6 +137,10 @@ final class DictationCoordinator: ObservableObject {
     /// the meeting that just ended, for as long as it is the thing you came
     /// back to the menu for.
     @Published private(set) var lastMeeting: MeetingSummary?
+    /// counts every change to a meeting on disk — one saved, one retitled,
+    /// one with a summary written — so a window that lists them knows to
+    /// read them again. a number and nothing else: it says that, never what.
+    @Published private(set) var meetingsRevision = 0
     @Published private(set) var lastMeetingSavedAt: Date?
 
     private static let lastMeetingRowLasts: TimeInterval = 600
@@ -156,6 +160,33 @@ final class DictationCoordinator: ObservableObject {
 
     let dictionaryStore: DictionaryStore
     let settings: AppSettings
+    /// fn+⌃: off until you turn it on in settings › rewrite.
+    let rewriteSettings: RewriteSettings
+    let rewriteAccounts: RewriteAccounts
+    /// the notes and titles of meetings: made when one is saved, if the ai
+    /// tab says to, and whenever the meetings window asks. the provider is
+    /// the one rewrite uses.
+    let meetingSummaries: MeetingSummaries
+    /// how loud the meeting is, for the meter alone: kept off this object
+    /// so fifteen changes a second do not redraw everything that watches it.
+    let meetingLevels = MeetingLevelsFeed()
+    private lazy var rewriteController: RewriteController = {
+        let controller = RewriteController(
+            settings: rewriteSettings
+        ) { [rewriteAccounts, rewriteSettings] in
+            await rewriteAccounts.connect(
+                rewriteSettings.provider,
+                model: rewriteSettings.model(for: rewriteSettings.provider)
+            )
+        }
+        controller.showPill = { [weak self] pill in
+            self?.showRewritePill(pill)
+        }
+        controller.announce = { [weak self] message in
+            self?.announce(message)
+        }
+        return controller
+    }()
 
     private let hotkeyMonitor: HotkeyMonitor
     private let transcriptionEngine: SpeechEngine
@@ -270,6 +301,7 @@ final class DictationCoordinator: ObservableObject {
     /// held while the mic is live (`keepDisplayAwake`).
     private var displayAwakeActivity: (any NSObjectProtocol)?
     private var aboutWindowController: AboutWindowController?
+    private var meetingsWindowController: MeetingsWindowController?
     #if DEBUG
     private var lampLabWindowController: LampLabWindowController?
     #endif
@@ -298,7 +330,7 @@ final class DictationCoordinator: ObservableObject {
     /// built on first use: a mac that only dictates never pays for meetings.
     let meetings: LazyMeetings
     /// made by the first meeting, like the panel that shows it.
-    private lazy var liveTranscript = LiveTranscriptModel(elapsed: .zero)
+    private(set) lazy var liveTranscript = LiveTranscriptModel(elapsed: .zero)
     @Published private(set) var meetingModelDownloads: [SpeechModel: Double] = [:]
     @Published private(set) var isLiveTranscriptShown = false
     /// `record a meeting` was pressed before its model was on disk, and is
@@ -327,6 +359,20 @@ final class DictationCoordinator: ObservableObject {
 
     init(settings: AppSettings = .shared) {
         self.settings = settings
+        let rewriteSettings = RewriteSettings.shared
+        let rewriteAccounts = RewriteAccounts.shared
+        self.rewriteSettings = rewriteSettings
+        self.rewriteAccounts = rewriteAccounts
+        meetingSummaries = MeetingSummaries(
+            connect: {
+                await rewriteAccounts.connect(
+                    rewriteSettings.provider,
+                    model: rewriteSettings.model(for: rewriteSettings.provider)
+                )
+            },
+            isEnabled: { rewriteSettings.summariesEnabled },
+            defaultTemplateID: { rewriteSettings.defaultTemplateID }
+        )
         activeDictationModel = settings.dictationModel
         engineSwitchState = EngineSwitchState(
             activeVersion: settings.dictationModel
@@ -414,6 +460,12 @@ final class DictationCoordinator: ObservableObject {
         monitor.onEscape = { [weak self] in
             self?.machine.escape() ?? false
         }
+        monitor.onRewriteModifier = { [weak self] in
+            guard let self, self.machine.rewriteModifierPressed() else {
+                return
+            }
+            self.rewriteController.takeBegan()
+        }
         // built ahead of the first press, off the main thread, and with
         // pre-roll on, listening.
         captureSlot.prepare()
@@ -481,8 +533,13 @@ final class DictationCoordinator: ObservableObject {
 
         wireMachine()
         wirePillQuestions()
+        wireRewrite()
         installSystemLifecycleObservers()
         wireMeetings()
+        // a summary or a title written is a meeting changed on disk.
+        meetingSummaries.onChange = { [weak self] _ in
+            self?.meetingsRevision += 1
+        }
         wireMeetingShortcut()
 
         permissions = SystemPermissions.snapshot()
@@ -579,6 +636,37 @@ final class DictationCoordinator: ObservableObject {
         resettingHotkey { hotkeyMonitor.rebind(to: binding) }
     }
 
+    /// a meeting file was changed by something that is not the coordinator
+    /// (a rename in the meetings window, a delete): the window's list reads
+    /// them again.
+    func noteMeetingsChanged() {
+        meetingsRevision += 1
+    }
+
+    /// the meetings window, made the first time and kept, on `select` if
+    /// given.
+    func openMeetings(select: URL? = nil) {
+        let controller: MeetingsWindowController
+        if let meetingsWindowController {
+            controller = meetingsWindowController
+        } else {
+            controller = MeetingsWindowController(coordinator: self)
+            meetingsWindowController = controller
+        }
+        controller.present(select: select)
+        // the window is where meetings are recorded from: the model starts
+        // loading now, so a meeting started here is read as it is said.
+        warmMeetingModel()
+    }
+
+    /// the meeting model, loading before record is pressed, for a mac set
+    /// up for meetings (`WarmMeetingModel`). it is over a minute for
+    /// whisper large; a meeting started before it is in is read from when
+    /// it is.
+    private func warmMeetingModel() {
+        guard settings.meetingsSetUp else { return }
+        MeetingEngines.warm(settings.meetingModel)
+    }
 
     func openAbout() {
         let controller: AboutWindowController
@@ -2096,9 +2184,13 @@ final class DictationCoordinator: ObservableObject {
                 )
             )
             panel.present()
-            // only a question takes the mouse, and only over the pill.
+            // only a question or the rewrite's picker takes the mouse, and
+            // only over the pill.
+            let takesClicks = self.isQuestionUp
+                || (self.rewriteController.isPicking
+                    && self.activeFeedbackGeneration == nil)
             panel.makePillReachable(
-                self.isQuestionUp ? self.hudViewModel.layout.size : nil
+                takesClicks ? self.hudViewModel.layout.size : nil
             )
         }
     }
@@ -2236,7 +2328,14 @@ extension DictationCoordinator {
     /// asked about. `model` is `record with`: this one meeting is heard by
     /// it instead of the default, and only the menu passes one — the pill's
     /// button and the hotkey always use the default.
-    func startMeeting(name: String? = nil, model: SpeechModel? = nil) {
+    ///
+    /// `title` names the meeting, and `appendingTo` records it into an
+    /// existing transcript as a new session instead of a file of its own:
+    /// the meetings window's two ways to start.
+    func startMeeting(
+        name: String? = nil, model: SpeechModel? = nil,
+        title: String? = nil, appendingTo: URL? = nil
+    ) {
         guard !meetings.isRecording else { return }
         guard installedMeetingModels.contains(model ?? settings.meetingModel) else {
             if let model {
@@ -2268,7 +2367,9 @@ extension DictationCoordinator {
             await notifier.requestPermissionIfNeeded()
         }
         withdrawQuestions { !$0.isAboutARecording }
-        meetings.coordinator.start(name: name ?? meetings.currentCall, model: model)
+        meetings.coordinator.start(
+            name: name ?? meetings.currentCall, model: model,
+            title: title, appendingTo: appendingTo)
     }
 
     /// the lines of `record with ▸`, empty when the menu shows none.
@@ -2493,6 +2594,10 @@ extension DictationCoordinator {
     /// suggestion by itself (ADR 0047).
     private func wire(_ monitor: CallMonitor) {
         monitor.onSuggestion = { [weak self] suggestion in
+            // a call began: it may be recorded in a moment, and the model
+            // should not still be loading when it is. loading is not acting
+            // on the suggestion — nothing records until `record`.
+            if case .record = suggestion { self?.warmMeetingModel() }
             self?.ask(MeetingQuestion(suggestion))
         }
         monitor.onCallsChanged = { [weak self] in
@@ -2545,9 +2650,21 @@ extension DictationCoordinator {
         built.keepMeetingRecord = { [weak self] record in
             self?.keep(record)
         }
+        // the meeting's clock moves with every chunk, ten times a second;
+        // the panel and the window show whole seconds. told more often, the
+        // window lays the whole transcript out again on every chunk.
         built.$elapsed
+            .map { Duration.seconds($0.components.seconds) }
+            .removeDuplicates()
             .sink { [weak self] elapsed in
                 self?.liveTranscript.elapsed = elapsed
+            }
+            .store(in: &meetingCancellables)
+        // the meter has an object of its own: this one is not told.
+        built.$levels
+            .removeDuplicates()
+            .sink { [weak self] levels in
+                self?.meetingLevels.levels = levels
             }
             .store(in: &meetingCancellables)
         // The menu observes *this* object, not the one nested inside it: a
@@ -2638,7 +2755,11 @@ extension DictationCoordinator {
             // in two seconds — often before you are back at the mac.
             lastMeeting = summary
             lastMeetingSavedAt = Date()
+            meetingsRevision += 1
             meetings.notifier.saved(summary)
+            // the notes are made after the file is on disk and the banner is
+            // up: a summary can take a minute, and never holds the save.
+            meetingSummaries.meetingSaved(at: summary.fileURL)
             // a quit waiting on the transcript is answered by
             // `untilWrittenOut`, not here: this file may be one of two.
         case .saveFailed:
@@ -2660,9 +2781,14 @@ extension DictationCoordinator {
                 if case .cannotHear = event { meetingsNeedAttention = true }
                 runOnboardingAgain(scope: .meetingsOnly, openAt: .permissions)
             }
+        case .transcribedAgain(let summary, _):
+            // the words changed under the summary, which went with them: the
+            // notes are made again, as for any saved meeting.
+            meetingsRevision += 1
+            meetingSummaries.meetingSaved(at: summary.fileURL)
         case .gettingReady, .recovering, .gapBegan, .gapEnded, .problemBegan,
              .problemCleared, .micMuted, .micUnmuted, .writingItOut, .readingAgain,
-             .hookFailed, .transcribingAgain, .transcribedAgain,
+             .hookFailed, .transcribingAgain,
              .couldNotTranscribeAgain:
             break
         }
@@ -2957,6 +3083,9 @@ extension DictationCoordinator {
     /// minute at most, and not for a pointer that was resting there when
     /// the pill came up.
     private func pointerOverPill(_ over: Bool) {
+        if rewriteController.isPicking {
+            rewriteController.pointerOverPill(over)
+        }
         guard isQuestionUp, var shown = questionShown else { return }
         shown.countdown.pointer(
             isOver: over, at: NSEvent.mouseLocation, now: questionNow)
@@ -3090,3 +3219,41 @@ enum HUDHierarchyDump {
     }
 }
 #endif
+
+// MARK: - the rewrite (fn+⌃)
+
+extension DictationCoordinator {
+    /// the machine asks for a rewrite only while it is on: off, ⌃ during a
+    /// take means nothing, as it always has.
+    private func wireRewrite() {
+        hudViewModel.onChoice = { [weak self] index in
+            self?.rewriteController.chose(button: index)
+        }
+        rewriteSettings.$isEnabled
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] enabled in
+                guard let self else { return }
+                guard enabled else {
+                    self.machine.rewrite = nil
+                    return
+                }
+                self.machine.rewrite = { @MainActor [weak self] text in
+                    guard let self else { return .asSaid }
+                    return await self.rewriteController.run(text)
+                }
+            }
+            .store(in: &settingsCancellables)
+        rewriteSettings.$modifier
+            .removeDuplicates()
+            .sink { [weak self] modifier in
+                self?.hotkeyMonitor.rewritePreference = modifier
+            }
+            .store(in: &settingsCancellables)
+    }
+
+    private func showRewritePill(_ pill: HUDRewritePill?) {
+        hudViewModel.showRewrite(pill)
+        synchronizeHUD()
+    }
+}

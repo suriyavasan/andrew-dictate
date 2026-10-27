@@ -131,11 +131,9 @@ final class MeetingsListModel: ObservableObject {
 
     func delete(_ meeting: MeetingSummary) {
         do {
-            try trash(meeting.fileURL)
+            try MeetingRemoval.remove(
+                meeting.fileURL, keptAudio: keptAudio, trash: trash)
             failure = nil
-            // nothing to check it against any more, and no reason to keep
-            // someone's voice past the words they said.
-            keptAudio?.deleteAudio(of: meeting.fileURL)
         } catch {
             // SPEC §4: a delete that did not happen must not look like one
             // that did, so the row comes back when the folder is re-read.
@@ -177,6 +175,10 @@ final class MeetingsListModel: ObservableObject {
 
     func again(for meeting: MeetingSummary) -> Again {
         guard startAgain != nil, audio[Self.key(meeting.fileURL)] != nil else { return .none }
+        // kept audio is one recording's, and a meeting recorded into again has
+        // several: reading it again would replace every session's words with
+        // the words of one.
+        if meeting.sessions > 1 { return .none }
         if transcribingAgain.map(Self.key) == Self.key(meeting.fileURL) { return .running }
         if isRecording { return .wait("recording") }
         if transcribingAgain != nil { return .wait("one at a time") }

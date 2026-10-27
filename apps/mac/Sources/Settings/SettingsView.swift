@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 
 enum SettingsTab: String, CaseIterable, Identifiable {
     case dictation
+    case ai
     case meetings
     case dictionary
     case history
@@ -14,6 +15,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .dictation: "dictation"
+        case .ai: "ai"
         case .dictionary: "dictionary"
         case .history: "history"
         case .meetings: "meetings"
@@ -98,6 +100,17 @@ struct SettingsView: View {
                 value: SettingsTab.dictation
             ) {
                 dictationTab
+            }
+            Tab(
+                "ai",
+                systemImage: "sparkles",
+                value: SettingsTab.ai
+            ) {
+                RewriteSettingsView(
+                    settings: coordinator.rewriteSettings,
+                    accounts: coordinator.rewriteAccounts,
+                    dictationKey: settings.dictationHotkey
+                )
             }
             Tab(
                 "meetings",

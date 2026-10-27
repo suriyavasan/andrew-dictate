@@ -81,6 +81,11 @@ final class LazyMeetings {
         builtCoordinator?.recovering
     }
 
+    /// silent until there is a meeting to be loud.
+    var levels: MeetingLevels {
+        builtCoordinator?.levels ?? .zero
+    }
+
     /// the transcript being made again, which only a built coordinator can
     /// be doing.
     var transcribingAgain: URL? {

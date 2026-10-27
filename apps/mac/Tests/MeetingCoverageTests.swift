@@ -31,7 +31,7 @@ final class MeetingCoverageTests: XCTestCase {
     private var docs: URL { dir.appendingPathComponent("docs") }
     private var spool: MeetingSpool { MeetingSpool(root: dir.appendingPathComponent("spool")) }
 
-    private func coordinator() -> MeetingCoordinator {
+    private func coordinator(readingAgainFor: Duration = .seconds(120)) -> MeetingCoordinator {
         let c = MeetingCoordinator(
             source: source,
             makeTranscriber: { [transcribers] model in try transcribers!.next(for: model) },
@@ -40,7 +40,8 @@ final class MeetingCoverageTests: XCTestCase {
             hookRunner: HookRunner(logURL: dir.appendingPathComponent("hooks.log")),
             thresholds: .init(
                 probeTimeout: .seconds(1), silenceTimeout: .seconds(600),
-                silenceFloor: 0.001, quietNudgeAfter: .seconds(3_600)),
+                silenceFloor: 0.001, quietNudgeAfter: .seconds(3_600),
+                readingAgainFor: readingAgainFor),
             // a meeting that passes lets its audio go at once, so the audio
             // left after one is only ever a thin one's.
             preferences: { [unowned self] in
@@ -93,6 +94,29 @@ final class MeetingCoverageTests: XCTestCase {
             MeetingEvent.readingAgain.hudText,
             "the transcript looked thin — reading the audio again…")
         XCTAssertEqual(events.filter { if case .saved = $0 { true } else { false } }.count, 1)
+    }
+
+    /// The meeting was read as it went; reading all of it again is a net,
+    /// and the stop does not wait an hour on it. A reading again that has
+    /// not finished in its time is let go: the file is written from the
+    /// live reading, says it is not whole and why, and its audio is kept
+    /// for a transcribe again.
+    func testAReadingAgainThatRunsPastItsTimeIsLetGoAndTheLiveReadingWritten() async throws {
+        let (live, again) = stillThin()
+        again.stalls = true
+        transcribers.lineUp(live, again)
+
+        let started = ContinuousClock.now
+        try await meeting(seconds: 2, readingAgainFor: .milliseconds(300))
+
+        XCTAssertLessThan(ContinuousClock.now - started, .seconds(10), "the stop did not wait on it")
+        let file = try XCTUnwrap(MeetingTranscriptFile.listAll(in: docs).first)
+        XCTAssertFalse(file.complete)
+        XCTAssertEqual(try frontMatter(of: file)["complete"], "false")
+        XCTAssertEqual(try lines(of: file), ["[00:00:01] them 1: hmm right"])
+        XCTAssertEqual(try keptAudio(), 1)
+        await waitFor { again.wasCancelled }
+        XCTAssertTrue(again.wasCancelled, "the reading given up on stops reading")
     }
 
     // MARK: - still thin
@@ -396,8 +420,8 @@ final class MeetingCoverageTests: XCTestCase {
     }
 
     /// A meeting `seconds` long, loud on both sides, stopped and written out.
-    private func meeting(seconds: Int) async throws {
-        let c = coordinator()
+    private func meeting(seconds: Int, readingAgainFor: Duration = .seconds(120)) async throws {
+        let c = coordinator(readingAgainFor: readingAgainFor)
         c.start()
         await source.awaitStart()
         for s in 0..<seconds {
@@ -522,6 +546,9 @@ private final class FakeTranscriber: MeetingTranscriber, @unchecked Sendable {
     /// What it says its decoding came to, live or read whole. nil keeps no
     /// count.
     var tally: StretchTally?
+    /// Read whole, it never finishes until it is cancelled.
+    var stalls = false
+    private var _wasCancelled = false
     let lines: AsyncStream<LiveLine>
 
     init() {
@@ -537,8 +564,20 @@ private final class FakeTranscriber: MeetingTranscriber, @unchecked Sendable {
     func feed(_ chunk: MeetingAudioChunk) async {}
     func finish() async -> [MeetingTurn] { finalTurns }
     func decodeTally() async -> StretchTally? { tally }
+    var wasCancelled: Bool {
+        lock.withLock { _wasCancelled }
+    }
+
     func transcribe(you: [Float], them: [Float]) async throws -> [MeetingTurn] {
         lock.withLock { _heard = [you.count, them.count] }
+        if stalls {
+            do {
+                try await Task.sleep(for: .seconds(600))
+            } catch {
+                lock.withLock { _wasCancelled = true }
+                throw error
+            }
+        }
         if let batchFailure { throw batchFailure }
         return batchTurns
     }
