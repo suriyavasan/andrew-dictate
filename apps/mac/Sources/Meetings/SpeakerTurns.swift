@@ -18,15 +18,33 @@ enum SpeakerTurns {
     /// numbers. One voice among the turns leaves them plain `them`.
     static func assign(_ turns: [MeetingTurn], to segments: [SpeakerSegment]) -> [MeetingTurn] {
         guard !segments.isEmpty else { return turns }
-        let voices = turns.map { turn -> String? in
-            guard case .them = turn.speaker else { return nil }
-            return voice(at: turn.at, in: segments)
-        }
+        let voices = voices(of: turns, in: segments)
         guard Set(voices.compactMap { $0 }).count > 1 else { return turns }
         let numbers = firstAppearances(of: voices, at: turns.map(\.at))
         return zip(turns, voices).map { turn, voice in
             guard let voice, let number = numbers[voice] else { return turn }
             return turn.said(by: .them(number))
+        }
+    }
+
+    /// The diarizer's id for each label `assign` gives: `them 2` is voice
+    /// "3". With one voice among the turns the label is plain `them`. What a
+    /// meeting's voices are kept under, so the embedding of a label can be
+    /// found.
+    static func labels(of turns: [MeetingTurn], in segments: [SpeakerSegment]) -> [String: String] {
+        guard !segments.isEmpty else { return [:] }
+        let voices = voices(of: turns, in: segments)
+        let found = Set(voices.compactMap { $0 })
+        if found.count == 1, let only = found.first { return ["them": only] }
+        guard found.count > 1 else { return [:] }
+        let numbers = firstAppearances(of: voices, at: turns.map(\.at))
+        return Dictionary(uniqueKeysWithValues: numbers.map { ("them \($0.value)", $0.key) })
+    }
+
+    private static func voices(of turns: [MeetingTurn], in segments: [SpeakerSegment]) -> [String?] {
+        turns.map { turn -> String? in
+            guard case .them = turn.speaker else { return nil }
+            return voice(at: turn.at, in: segments)
         }
     }
 

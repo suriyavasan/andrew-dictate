@@ -25,9 +25,27 @@ struct MeetingDetailView: View {
             } transcript: {
                 MeetingTranscriptPane(
                     document: document,
-                    live: isRecordingIntoThis ? state.coordinator.liveTranscript : nil)
+                    live: isRecordingIntoThis ? state.coordinator.liveTranscript : nil,
+                    namer: isRecordingIntoThis ? nil : namer)
             }
         }
+    }
+
+    /// naming a speaker rewrites the file, then the list reads it again.
+    private var namer: SpeakerNamer {
+        let document = document
+        let url = entry.id
+        let library = library
+        return SpeakerNamer(
+            isNameable: { !document.isYou($0) },
+            revertLabel: { shown in
+                guard !SpeakerNames.isOriginal(shown) else { return nil }
+                return MeetingTranscriptFile.origins(of: shown, in: document.header.voices).first
+            },
+            suggestions: { library.knownNames() },
+            apply: { shown, name in
+                Task { await library.nameSpeaker(shown, as: name, in: url) }
+            })
     }
 
     private var currentTemplate: MeetingTemplate {

@@ -73,6 +73,13 @@ struct MeetingPreferences: Sendable {
     var model: SpeechModel
     /// How long its audio waits once its file is written.
     var keepAudio: KeepMeetingAudio = .default
+    /// What the file calls you instead of `you`; nil leaves it `you`.
+    var yourName: String? = nil
+    /// Whether voices are kept and recognised: the far side's clusters are
+    /// named from the remembered voices, and their embeddings kept so a
+    /// speaker can be named later. Off by default here so a test that does
+    /// not ask never touches a voice book; the app's setting is on.
+    var rememberVoices = false
 }
 
 /// The moments the rest of the app shows. The HUD says these in words; the
@@ -306,6 +313,10 @@ final class MeetingCoordinator: ObservableObject {
     private let keptAudio: KeptAudio
     private let preferences: @MainActor () -> MeetingPreferences
     private let hookRunner: HookRunner
+    /// The voices this mac can recognise, and the voices of each meeting
+    /// kept for naming them later.
+    private let voiceBook: VoiceBook
+    private let voicePrints: MeetingVoicePrints
     private let logger = Logger(subsystem: AppIdentity.loggingSubsystem, category: "meeting")
 
     /// The meeting being recorded, from `start` until it stops.
@@ -420,6 +431,8 @@ final class MeetingCoordinator: ObservableObject {
         spool: MeetingSpool = MeetingSpool(),
         hookRunner: HookRunner = HookRunner(logURL: HookRunner.defaultLogURL),
         keptAudio: KeptAudio? = nil,
+        voiceBook: VoiceBook? = nil,
+        voicePrints: MeetingVoicePrints? = nil,
         thresholds: MeetingThresholds = .provisional,
         now: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now },
         date: @escaping @Sendable () -> Date = { Date() },
@@ -443,6 +456,13 @@ final class MeetingCoordinator: ObservableObject {
             root: spool.root.deletingLastPathComponent()
                 .appendingPathComponent(KeptAudio.folderName, isDirectory: true))
         self.hookRunner = hookRunner
+        // beside the spool, like the kept audio: the app's own folder, or a
+        // test's, so a test never writes into the real voice book.
+        let support = spool.root.deletingLastPathComponent()
+        self.voiceBook = voiceBook ?? VoiceBook(
+            url: support.appendingPathComponent(VoiceBook.fileName))
+        self.voicePrints = voicePrints ?? MeetingVoicePrints(
+            folder: support.appendingPathComponent(MeetingVoicePrints.folderName, isDirectory: true))
         self.thresholds = thresholds
         self.now = now
         self.date = date
@@ -1573,7 +1593,8 @@ final class MeetingCoordinator: ObservableObject {
             app: meeting.app, started: meeting.started, model: prefs.model,
             folder: prefs.folder, keepAudio: prefs.keepAudio, recovered: false,
             title: meeting.title, appendTo: meeting.appendTo,
-            notes: meeting.notes, speakers: meeting.speakers)
+            notes: meeting.notes, speakers: meeting.speakers,
+            yourName: prefs.yourName, rememberVoices: prefs.rememberVoices)
         if let label = saved?.keep {
             await keep(handle, as: label)
         }
@@ -1721,12 +1742,15 @@ final class MeetingCoordinator: ObservableObject {
         title: String? = nil,
         appendTo: URL? = nil,
         notes: MeetingRecord.Notes = .init(),
-        speakers: SpeakerSplit? = nil
+        speakers: SpeakerSplit? = nil,
+        yourName: String? = nil,
+        rememberVoices: Bool = false
     ) async -> Saved? {
         let turns = covered.reading.turns
         let tally = covered.reading.tally
-        let (split, speakersReport) = await splitSpeakers(
+        let (split, speakersReport, heard) = await splitSpeakers(
             in: turns, heardBy: speakers, spool: handle.audioURL, clock: clock)
+        let recognised = recognising(heard, remembering: rememberVoices, apart: yourName)
 
         let thin = covered.result == .thin
         let transcript = MeetingTranscript(
@@ -1739,6 +1763,8 @@ final class MeetingCoordinator: ObservableObject {
             reason: thin ? covered.reason : nil,
             nobodySpoke: !thin && covered.reading.nobodySpoke,
             title: title,
+            youName: yourName,
+            voices: recognised,
             turns: split
         )
         func record(
@@ -1770,6 +1796,7 @@ final class MeetingCoordinator: ObservableObject {
             onEvent?(.saveFailed(error.localizedDescription))
             return nil
         }
+        remember(heard, recognised: recognised, in: url, replacing: false, remembering: rememberVoices)
         // the audio waits as long as the setting said, and a thin
         // meeting's until you delete it: it is the only way to check the
         // file, or read it again.
@@ -1862,7 +1889,7 @@ final class MeetingCoordinator: ObservableObject {
         heardBy speakers: SpeakerSplit?,
         spool url: URL,
         clock: SpoolClock
-    ) async -> (turns: [MeetingTurn], report: SpeakerSplit.Report?) {
+    ) async -> (turns: [MeetingTurn], report: SpeakerSplit.Report?, voices: [String: [Float]]) {
         let split: SpeakerSplit
         if let speakers {
             split = speakers
@@ -1871,7 +1898,36 @@ final class MeetingCoordinator: ObservableObject {
             await split.hear(spool: url)
         }
         let (found, report) = await split.split(clock.onTheSpool(turns))
-        return (SpoolClock.speakers(of: found, onto: turns), report)
+        return (SpoolClock.speakers(of: found, onto: turns), report, split.voices)
+    }
+
+    /// The names the remembered voices give this meeting's far-side
+    /// clusters, by label. Nobody is named with the setting off, or when
+    /// the diarizer kept no embeddings. Your own name is never given to
+    /// someone else.
+    private func recognising(
+        _ voices: [String: [Float]], remembering: Bool, apart yourName: String?
+    ) -> [String: String] {
+        guard remembering, !voices.isEmpty else { return [:] }
+        return VoiceMatching.names(
+            for: voices, among: voiceBook.people(),
+            reserved: SpeakerNames.clean(yourName).map { [$0] } ?? [])
+    }
+
+    /// Keeps a meeting's voices for naming later, and teaches the book the
+    /// ones that were recognised: a voice that is heard again sharpens the
+    /// average it was matched to. Only the voices the print store took are
+    /// taught, so the book and the prints always agree on who was taught
+    /// what. `replacing` is for a transcript made again, whose labels are new.
+    private func remember(
+        _ voices: [String: [Float]], recognised: [String: String],
+        in transcript: URL, replacing: Bool, remembering: Bool
+    ) {
+        guard remembering, !voices.isEmpty else { return }
+        let stored = voicePrints.keep(voices, taught: recognised, for: transcript, replacing: replacing)
+        for (label, name) in recognised where stored.contains(label) {
+            if let embedding = voices[label] { voiceBook.learn(embedding, as: name) }
+        }
     }
 
     private func recover(
@@ -1954,7 +2010,9 @@ final class MeetingCoordinator: ObservableObject {
                 keepAudio: prefs.keepAudio,
                 recovered: true,
                 title: manifest.title,
-                appendTo: manifest.appendTo)
+                appendTo: manifest.appendTo,
+                yourName: prefs.yourName,
+                rememberVoices: prefs.rememberVoices)
             if let label = saved?.keep {
                 await keep(handle, as: label)
             }
@@ -2463,8 +2521,9 @@ extension MeetingCoordinator {
             tally: await transcriber.decodeTally())
         // checked like any reading, and not read again: this was.
         let covered = Covered(checking: reading, farSideLoud: await farSideLoud(at: url))
-        let (split, _) = await splitSpeakers(
+        let (split, _, heard) = await splitSpeakers(
             in: reading.turns, heardBy: nil, spool: url, clock: clock)
+        let recognised = recognising(heard, remembering: prefs.rememberVoices, apart: prefs.yourName)
         attempt.turns = split
         attempt.covered = covered
 
@@ -2487,12 +2546,14 @@ extension MeetingCoordinator {
             engine: model.rawValue, gaps: header.gaps, recovered: header.recovered,
             reason: thin ? covered.reason : nil,
             nobodySpoke: !thin && reading.nobodySpoke,
+            youName: prefs.yourName, voices: recognised,
             turns: split)
         do {
             try MeetingTranscriptFile.replace(at: transcript, with: again, timeZone: header.timeZone)
         } catch MeetingTranscriptFile.Failure.gone {
             throw AgainFailure.deleted
         }
+        remember(heard, recognised: recognised, in: transcript, replacing: true, remembering: prefs.rememberVoices)
 
         // audio kept until you deleted it because the file was thin is an
         // ordinary meeting's once a reading covers it: it waits as long as

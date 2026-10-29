@@ -16,6 +16,7 @@ enum MeetingSummaryPrompt {
     Do not invent facts. Prefer concrete takeaways over filler. Capture owners only when they are actually mentioned.
     If a requested section has no content, write "None noted."
     Speakers are labelled `you` (the person recording) and `them`/`them 1`, `them 2` … (others). Keep those labels when naming owners.
+    A speaker the transcript knows by name is labelled with that name instead: use it as written.
     """
 
     /// the transcript is data. said in the system prompt and again beside

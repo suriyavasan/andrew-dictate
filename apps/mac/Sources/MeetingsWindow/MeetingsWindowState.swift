@@ -57,7 +57,9 @@ final class MeetingsWindowState: ObservableObject {
         let keptAudio = KeptAudio()
         library = MeetingsLibraryModel(
             load: { [] },
-            delete: { url in try MeetingRemoval.remove(url, keptAudio: keptAudio) })
+            delete: { url in
+                try MeetingRemoval.remove(url, keptAudio: keptAudio, voicePrints: MeetingVoicePrints())
+            })
         seenRevision = coordinator.meetingsRevision
         seenSavedAt = coordinator.lastMeetingSavedAt
         lastSaved = coordinator.lastMeeting?.fileURL

@@ -26,6 +26,53 @@ bilingual record, and it working in every app rather than one platform.
   light and dark following the system, native controls and materials. no gold,
   no custom fonts, no forced dark, no lowercase brand copy.
 
+## speakers by name — built before phase 2 (2026-10-29)
+
+**purpose:** a transcript that says *who* said what, by name, so the user and
+every AI agent they work with (Claude Code and the like) read "Priya: …", not
+"them 2: …". no bot joins the call; nothing leaves the mac.
+
+where names come from, strongest first:
+
+1. **the call app's own window, through accessibility** (already granted for
+   paste): Zoom's tiles and participant list, Google Meet / Teams in a browser.
+   the speaking highlight, sampled a few times a second *only while a meeting
+   records* and only from the call's app, tells who is talking now. aligning those
+   intervals with the diarizer's clusters names each cluster; a live line takes
+   whoever was highlighted while it was spoken.
+2. **remembered voices.** once a cluster has a name (from 1 or by hand), its
+   voice embedding is kept on this mac and recognises them in later meetings, in
+   any app. a setting turns it off; every voice can be forgotten.
+3. **by hand.** click a speaker label in the meetings window (and later the live
+   panel) to name it; the file and the voice are updated.
+4. **you** are your name (settings, default the mac account's full name).
+5. later: calendar attendees for spelling, and names said aloud ("thanks, Rahul")
+   as a hint for the summary.
+
+**for agents:**
+- the saved markdown carries names on every turn and a `participants` list in
+  the front matter.
+- while a meeting records, the app appends each line (time, name, text, later
+  the English) to a live feed file an agent can follow.
+- a bundled MCP server (`andrew-dictate-mcp`, stdio) lists, reads and searches
+  meetings and reads the live one; settings › meetings shows the one command
+  that adds it to Claude Code.
+
+tracks:
+
+- **S1 — names, voices, rename, transcript format** (no call needed).
+- **S2 — accessibility probe** (`Tools/roster-probe`): dumps what Zoom, Meet in
+  Chrome / Arc / Safari expose while the user is in a real call. needs the user
+  to run it in one or two calls.
+- **S3 — agents:** the live feed and the MCP server.
+- **S4 — roster readers** for Zoom and Meet built from S2's dumps; automatic
+  naming from the speaking highlight, live and at the end.
+
+**bar:** in a real Zoom and a real Meet call with three people, every line of
+the saved transcript carries the right name, live lines carry it within a
+couple of seconds, and Claude Code can answer "what did Priya ask for?" through
+the MCP server.
+
 ## phase 1 — engine test (purpose: choose the live Hindi engine on numbers)
 
 a developer tool, `Tools/hindi-bench`, beside `meeting-bench`. it streams Hindi

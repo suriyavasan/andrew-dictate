@@ -9,6 +9,9 @@ struct MeetingTranscriptPane: View {
     let document: MeetingDocument?
     /// the streaming pass, while the meeting is being recorded.
     let live: LiveTranscriptModel?
+    /// how a speaker is named by hand, or nil where it cannot be (a meeting
+    /// that is being recorded).
+    var namer: SpeakerNamer?
 
     /// the rows of the file, laid out once per file: the window draws this
     /// pane again whenever anything it watches moves — a search, a reload,
@@ -19,7 +22,9 @@ struct MeetingTranscriptPane: View {
         if let live {
             LiveBody(document: document, live: live, rows: rows)
         } else if let document {
-            PaneBody(items: rows.items(for: document), document: document, isLive: false)
+            PaneBody(
+                items: rows.items(for: document), document: document, isLive: false,
+                namer: namer)
         } else {
             EmptyView()
         }
@@ -33,7 +38,7 @@ struct MeetingTranscriptPane: View {
         let rows: Rows
 
         var body: some View {
-            let known = document?.speakers ?? []
+            let known = document?.speakersWithYou ?? []
             let before = document.map(rows.items(for:)) ?? []
             // a meeting recorded into again gets its new session announced.
             let marker: [MeetingTranscriptBlocks.Item] = document == nil || live.lines.isEmpty
@@ -41,7 +46,7 @@ struct MeetingTranscriptPane: View {
             PaneBody(
                 items: before + marker
                     + MeetingTranscriptBlocks.items(live: live.lines, knownSpeakers: known),
-                document: document, isLive: true)
+                document: document, isLive: true, namer: nil)
         }
     }
 
@@ -65,6 +70,7 @@ struct MeetingTranscriptPane: View {
         let items: [MeetingTranscriptBlocks.Item]
         let document: MeetingDocument?
         let isLive: Bool
+        let namer: SpeakerNamer?
 
         @State private var query = ""
         @State private var current = 0
@@ -186,7 +192,8 @@ struct MeetingTranscriptPane: View {
                         ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                             TranscriptRow(
                                 item: item, isFirst: index == 0, query: query,
-                                activeOccurrence: active?.itemID == item.id ? active?.occurrence : nil)
+                                activeOccurrence: active?.itemID == item.id ? active?.occurrence : nil,
+                                namer: namer)
                         }
                         Color.clear.frame(height: 1).id(Self.bottom)
                     }
@@ -268,6 +275,9 @@ private struct TranscriptRow: View {
     let isFirst: Bool
     let query: String
     let activeOccurrence: Int?
+    let namer: SpeakerNamer?
+
+    @State private var isNaming = false
 
     var body: some View {
         switch item.kind {
@@ -295,7 +305,22 @@ private struct TranscriptRow: View {
         .accessibilityAddTraits(.isHeader)
     }
 
+    @ViewBuilder
     private func paragraph(_ turn: MeetingTranscriptBlocks.Turn) -> some View {
+        // the speaker is a button where it can be named: then it is its own
+        // element for voiceover, and the row around it is not read as one.
+        let nameable = turn.beginsRun && (namer?.isNameable(turn.speaker) ?? false)
+        let row = paragraphRow(turn, nameable: nameable)
+        if nameable {
+            row.accessibilityElement(children: .contain)
+        } else {
+            row
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("\(turn.speaker), \(turn.at.runningClock): \(turn.text)")
+        }
+    }
+
+    private func paragraphRow(_ turn: MeetingTranscriptBlocks.Turn, nameable: Bool) -> some View {
         let ink = SpeakerInk.color(turn.colour)
         return HStack(alignment: .top, spacing: MW.s12) {
             Text(turn.at.runningClock)
@@ -305,13 +330,11 @@ private struct TranscriptRow: View {
                 .padding(.top, turn.beginsRun ? 3 : 2)
             VStack(alignment: .leading, spacing: 4) {
                 if turn.beginsRun {
-                    Text(turn.speaker)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(ink)
-                        .padding(.horizontal, 8)
-                        .frame(height: 18)
-                        .background(Capsule().fill(ink.opacity(0.16)))
-                        .overlay(Capsule().stroke(ink.opacity(0.3), lineWidth: 1))
+                    if nameable, let namer {
+                        speakerButton(turn, ink: ink, namer: namer)
+                    } else {
+                        speakerLabel(turn.speaker, ink: ink)
+                    }
                 }
                 Text(highlighted(turn.text))
                     .font(.system(size: 13.5))
@@ -329,8 +352,39 @@ private struct TranscriptRow: View {
                 }
             }
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(turn.speaker), \(turn.at.runningClock): \(turn.text)")
+    }
+
+    private func speakerLabel(_ speaker: String, ink: Color) -> some View {
+        Text(speaker)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(ink)
+            .padding(.horizontal, 8)
+            .frame(height: 18)
+            .background(Capsule().fill(ink.opacity(0.16)))
+            .overlay(Capsule().stroke(ink.opacity(0.3), lineWidth: 1))
+    }
+
+    /// clicking who spoke offers to name them.
+    private func speakerButton(
+        _ turn: MeetingTranscriptBlocks.Turn, ink: Color, namer: SpeakerNamer
+    ) -> some View {
+        Button {
+            isNaming = true
+        } label: {
+            speakerLabel(turn.speaker, ink: ink)
+        }
+        .buttonStyle(.plain)
+        .help("name this speaker…")
+        .accessibilityLabel(turn.speaker)
+        .accessibilityHint("name this speaker")
+        .popover(isPresented: $isNaming, arrowEdge: .bottom) {
+            SpeakerNameForm(speaker: turn.speaker, namer: namer) { name in
+                isNaming = false
+                namer.apply(turn.speaker, name)
+            } cancel: {
+                isNaming = false
+            }
+        }
     }
 
     /// the find field's matches lit pale gold, the one you are on in gold

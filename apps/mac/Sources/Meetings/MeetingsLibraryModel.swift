@@ -92,14 +92,25 @@ final class MeetingsLibraryModel: ObservableObject {
         /// when the file last changed: what a cached document is checked against.
         var stamp: @Sendable (URL) -> Date?
         var setTitle: @Sendable (_ title: String?, URL) throws -> Void
+        /// names a speaker, as the file shows them (`them 2`), or puts the
+        /// label back when the name is nil.
+        var nameSpeaker: @Sendable (_ shown: String, _ name: String?, URL) throws -> Void = { _, _, _ in }
+        /// the names to suggest for a speaker: the people the mac remembers.
+        var knownNames: @Sendable () -> [String] = { [] }
 
-        static let onDisk = Files(
-            read: { try MeetingTranscriptFile.document(at: $0) },
-            stamp: {
-                (try? FileManager.default.attributesOfItem(atPath: $0.path))?[.modificationDate]
-                    as? Date
-            },
-            setTitle: { try MeetingTranscriptFile.setTitle($0, at: $1) })
+        static let onDisk = onDisk(naming: .live)
+
+        static func onDisk(naming: SpeakerNaming) -> Files {
+            Files(
+                read: { try MeetingTranscriptFile.document(at: $0) },
+                stamp: {
+                    (try? FileManager.default.attributesOfItem(atPath: $0.path))?[.modificationDate]
+                        as? Date
+                },
+                setTitle: { try MeetingTranscriptFile.setTitle($0, at: $1) },
+                nameSpeaker: { try naming.rename($0, to: $1, at: $2) },
+                knownNames: { naming.knownNames() })
+        }
     }
 
     @Published private(set) var entries: [Entry] = []
@@ -228,7 +239,7 @@ final class MeetingsLibraryModel: ObservableObject {
         ].joined(separator: "\n")
         return Loaded(
             document: document, stamp: stamp, haystack: folded(haystack),
-            speakers: document.speakers, snippet: document.snippet)
+            speakers: document.speakersWithYou, snippet: document.snippet)
     }
 
     /// reads one file again, now: after a change made here.
@@ -364,6 +375,30 @@ final class MeetingsLibraryModel: ObservableObject {
         await refresh(url)
         onChange?(url)
         return true
+    }
+
+    /// gives a speaker a name everywhere in the meeting, or puts their label
+    /// back when `name` is blank. a name that cannot be written is not an
+    /// error: it is refused by the file and the speaker stays as they were.
+    @discardableResult
+    func nameSpeaker(_ shown: String, as name: String, in url: URL) async -> Bool {
+        let files = files
+        let typed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            try await Task.detached { try files.nameSpeaker(shown, typed.isEmpty ? nil : typed, url) }.value
+        } catch {
+            failure = "couldn’t name that speaker."
+            return false
+        }
+        failure = nil
+        await refresh(url)
+        onChange?(url)
+        return true
+    }
+
+    /// the people to suggest when naming a speaker.
+    func knownNames() -> [String] {
+        files.knownNames()
     }
 
     /// throws the meeting away (to the trash, with its audio), and selects

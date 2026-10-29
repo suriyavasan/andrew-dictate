@@ -39,7 +39,7 @@ enum MeetingTranscriptBlocks {
     /// a recorded meeting. headings only when there is more than one session,
     /// because the clock restarts in each and one heading alone says nothing.
     static func items(for document: MeetingDocument) -> [Item] {
-        let colours = colours(of: document.speakers)
+        let colours = colours(of: document.speakers, you: document.youLabel)
         var items: [Item] = []
         let several = document.sessions.count > 1
         for (s, session) in document.sessions.enumerated() {
@@ -97,19 +97,21 @@ enum MeetingTranscriptBlocks {
 
     /// the first of the other speakers has the first colour, whoever spoke
     /// before them: `you` does not use one up.
-    static func colour(of speaker: String, in speakers: [String]) -> Int? {
-        guard speaker != you else { return nil }
-        let others = speakers.filter { $0 != you }
+    /// `youLabel` is what the file calls you, when it is not `you`.
+    static func colour(of speaker: String, in speakers: [String], you youLabel: String = you) -> Int? {
+        func isYou(_ label: String) -> Bool { label == you || label == youLabel }
+        guard !isYou(speaker) else { return nil }
+        let others = speakers.filter { !isYou($0) }
         guard let index = others.firstIndex(of: speaker) else { return nil }
         return index % palette
     }
 
     /// `colour(of:in:)` for every speaker at once, for laying out a whole
     /// transcript without going through the speakers again on every row.
-    private static func colours(of speakers: [String]) -> [String: Int] {
+    private static func colours(of speakers: [String], you youLabel: String = you) -> [String: Int] {
         var colours: [String: Int] = [:]
         for speaker in speakers where colours[speaker] == nil {
-            if let colour = colour(of: speaker, in: speakers) { colours[speaker] = colour }
+            if let colour = colour(of: speaker, in: speakers, you: youLabel) { colours[speaker] = colour }
         }
         return colours
     }

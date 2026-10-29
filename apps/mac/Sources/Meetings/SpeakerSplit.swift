@@ -33,6 +33,12 @@ final class SpeakerSplit {
     /// much as a stop should have to catch up on.
     static let mostWaiting = 5
 
+    /// The embedding behind each label the last `split` wrote into the
+    /// turns, under the label the file uses: `them 2`, or plain `them`.
+    /// Empty until a split has been asked for, and for a diarizer that
+    /// keeps no embeddings.
+    private(set) var voices: [String: [Float]] = [:]
+
     private let hearing: (any SpeakerHearing)?
     private var pieces: SpeakerPieces
     /// Far side spooled since the last piece was cut: the next piece, as it
@@ -166,7 +172,26 @@ final class SpeakerSplit {
             else { return turn }
             return turn.said(by: found.speaker)
         }
-        return (SpeakerTurns.numbered(heard), report)
+        let numbered = SpeakerTurns.numbered(heard)
+        voices = await voices(heardAs: heard, writtenAs: numbered, of: turns, from: hearing)
+        return (numbered, report)
+    }
+
+    /// The hearing's embeddings, from the labels it numbered to the ones the
+    /// turns ended up with: skipping a piece can leave a voice with no turns
+    /// and renumber the rest, so the two are matched turn by turn.
+    private func voices(
+        heardAs heard: [MeetingTurn], writtenAs numbered: [MeetingTurn],
+        of turns: [MeetingTurn], from hearing: any SpeakerHearing
+    ) async -> [String: [Float]] {
+        let held = await hearing.voices(of: turns)
+        guard !held.isEmpty else { return [:] }
+        var kept: [String: [Float]] = [:]
+        for (before, after) in zip(heard, numbered) {
+            guard case .them = after.speaker, let embedding = held[before.speaker.label] else { continue }
+            kept[after.speaker.label] = embedding
+        }
+        return kept
     }
 
     // MARK: - the pieces

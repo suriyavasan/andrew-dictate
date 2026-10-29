@@ -408,7 +408,9 @@ final class DictationCoordinator: ObservableObject {
                         folder: settings.meetingsFolder,
                         hook: settings.meetingHook,
                         model: settings.meetingModel,
-                        keepAudio: settings.keepMeetingAudio
+                        keepAudio: settings.keepMeetingAudio,
+                        yourName: SpeakerNames.clean(settings.yourName),
+                        rememberVoices: settings.rememberVoices
                     )
                 }
             )

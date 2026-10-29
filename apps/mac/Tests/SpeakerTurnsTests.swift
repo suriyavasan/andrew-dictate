@@ -67,6 +67,39 @@ final class SpeakerTurnsTests: XCTestCase {
             ["them 1", "you", "them 2"])
     }
 
+    // MARK: - labels
+
+    /// The embeddings are the diarizer's, by its own ids; the labels are the
+    /// file's. This is the bridge between them.
+    func testEachLabelKnowsTheVoiceItWasGiven() {
+        let segments = [segment("7", 0, 10), segment("4", 10, 20), segment("9", 20, 30)]
+        let turns = [them(at: 12), them(at: 2), them(at: 22), them(at: 25)]
+
+        // numbers go by the time each voice first speaks: 7 at 2 s, then 4 at 12 s.
+        XCTAssertEqual(
+            SpeakerTurns.labels(of: turns, in: segments),
+            ["them 1": "7", "them 2": "4", "them 3": "9"])
+    }
+
+    func testOneVoiceIsPlainThemAndNoVoicesAreNone() {
+        let segments = [segment("7", 0, 10), segment("4", 10, 20)]
+        XCTAssertEqual(SpeakerTurns.labels(of: [them(at: 2), them(at: 3)], in: segments), ["them": "7"])
+        XCTAssertTrue(SpeakerTurns.labels(of: [], in: segments).isEmpty)
+        XCTAssertTrue(SpeakerTurns.labels(of: [them(at: 2)], in: []).isEmpty)
+        XCTAssertTrue(SpeakerTurns.labels(
+            of: [MeetingTurn(speaker: .you, at: .seconds(1), text: "me")], in: segments).isEmpty)
+    }
+
+    func testTheLabelsAreTheOnesAssignGives() {
+        let segments = [segment("7", 0, 10), segment("4", 10, 20)]
+        let turns = [them(at: 12), them(at: 2), them(at: 15)]
+        let assigned = SpeakerTurns.assign(turns, to: segments)
+        let labels = SpeakerTurns.labels(of: turns, in: segments)
+        XCTAssertEqual(Set(assigned.map(\.speaker.label)), Set(labels.keys))
+        XCTAssertEqual(assigned.map(\.speaker.label), ["them 2", "them 1", "them 2"])
+        XCTAssertEqual(labels["them 2"], "4")
+    }
+
     // MARK: - numbered
 
     /// Whatever numbered the turns, the file's numbers are 1, 2, 3 in order

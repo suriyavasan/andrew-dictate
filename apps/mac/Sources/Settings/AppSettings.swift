@@ -211,6 +211,31 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    /// what a saved transcript calls you, in place of `you`. unset is the
+    /// mac account's full name; empty is a choice, and means `you` again.
+    /// what is stored is what was typed; `SpeakerNames` makes it a name a
+    /// file can hold, when a meeting is written.
+    @Published var yourName: String {
+        didSet {
+            guard yourName != oldValue else {
+                return
+            }
+            userDefaults.set(yourName, forKey: Self.yourNameKey)
+        }
+    }
+
+    /// whether the voices of the people on the far side are remembered, so a
+    /// later meeting can name them. on by default: it is local, it can be
+    /// emptied, and without it every meeting starts again at `them 1`.
+    @Published var rememberVoices: Bool {
+        didSet {
+            guard rememberVoices != oldValue else {
+                return
+            }
+            userDefaults.set(rememberVoices, forKey: Self.rememberVoicesKey)
+        }
+    }
+
     /// when the hook last ran, and how it went — "ok", "exit 3". kept
     /// because a hook that failed silently is a hook nobody can fix.
     @Published var meetingHookLastRunAt: Date? {
@@ -352,6 +377,10 @@ final class AppSettings: ObservableObject {
     private static let meetingsSetUpKey = "AndrewDictate.meetingsSetUp"
     private static let meetingModelKey = "AndrewDictate.meetingModel"
     private static let meetingShortcutKey = "AndrewDictate.meetingShortcut"
+    private static let yourNameKey = "AndrewDictate.yourName"
+    /// read without the settings object by whatever renames a speaker off
+    /// the main actor.
+    nonisolated static let rememberVoicesKey = "AndrewDictate.rememberVoices"
     private static let meetingsFolderKey = "AndrewDictate.meetingsFolder"
     private static let meetingHookKey = "AndrewDictate.meetingHook"
     private static let keepMeetingAudioKey = "AndrewDictate.keepMeetingAudio"
@@ -416,7 +445,8 @@ final class AppSettings: ObservableObject {
 
     init(
         userDefaults: UserDefaults = .standard,
-        unpickedMeetingsFolder: URL = AppSettings.unpickedMeetingsFolder()
+        unpickedMeetingsFolder: URL = AppSettings.unpickedMeetingsFolder(),
+        accountName: String = NSFullUserName()
     ) {
         self.userDefaults = userDefaults
         onboardingDismissed = userDefaults.bool(
@@ -490,6 +520,12 @@ final class AppSettings: ObservableObject {
         ) == nil
             ? true
             : userDefaults.bool(forKey: Self.checksForUpdatesKey)
+
+        yourName = userDefaults.string(forKey: Self.yourNameKey) ?? accountName
+        // unset means on.
+        rememberVoices = userDefaults.object(forKey: Self.rememberVoicesKey) == nil
+            ? true
+            : userDefaults.bool(forKey: Self.rememberVoicesKey)
 
         // an install from before the default left ~/Documents keeps the
         // folder its transcripts are in — written down, so the choice

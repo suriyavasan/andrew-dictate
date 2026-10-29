@@ -81,6 +81,9 @@ struct FluidDiarizer: MeetingDiarizer {
 private final class Hearing: SpeakerHearing {
     private let ear: Ear
     private let segments = Mutex<[SpeakerSegment]>([])
+    /// Each voice's embedding as the manager held it after the last piece:
+    /// its running average over everything that voice said.
+    private let embeddings = Mutex<[String: [Float]]>([:])
 
     init(ear: Ear) {
         self.ear = ear
@@ -88,11 +91,18 @@ private final class Hearing: SpeakerHearing {
 
     func hear(_ piece: [Float], at: Duration) async throws {
         let found = try await ear.hear(piece, at: at)
-        segments.withLock { $0 += found }
+        segments.withLock { $0 += found.segments }
+        embeddings.withLock { $0 = found.embeddings }
     }
 
     func split(_ turns: [MeetingTurn]) async -> [MeetingTurn] {
         SpeakerTurns.assign(turns, to: segments.withLock { $0 })
+    }
+
+    func voices(of turns: [MeetingTurn]) async -> [String: [Float]] {
+        let held = embeddings.withLock { $0 }
+        let labels = SpeakerTurns.labels(of: turns, in: segments.withLock { $0 })
+        return labels.compactMapValues { held[$0] }
     }
 }
 
@@ -107,14 +117,23 @@ private actor Ear {
         self.embedding = embedding
     }
 
-    func hear(_ piece: [Float], at: Duration) throws -> [SpeakerSegment] {
+    func hear(
+        _ piece: [Float], at: Duration
+    ) throws -> (segments: [SpeakerSegment], embeddings: [String: [Float]]) {
         let manager = try manager ?? load()
-        return try manager.performCompleteDiarization(piece, atTime: at.totalSeconds).segments.map {
+        let segments = try manager.performCompleteDiarization(piece, atTime: at.totalSeconds).segments.map {
             SpeakerSegment(
                 speaker: $0.speakerId,
                 from: .seconds(Double($0.startTimeSeconds)),
                 to: .seconds(Double($0.endTimeSeconds)))
         }
+        // the speaker database is what carries a voice from one piece to the
+        // next, and each speaker in it holds the running average of its
+        // embeddings: the centroid of the cluster, which is what a later
+        // meeting is compared with.
+        let embeddings = manager.speakerManager.getAllSpeakers()
+            .mapValues(\.currentEmbedding)
+        return (segments, embeddings)
     }
 
     private func load() throws -> DiarizerManager {

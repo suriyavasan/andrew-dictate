@@ -53,11 +53,56 @@ struct MeetingTranscript: Equatable, Sendable {
     var template: String? = nil
     /// How many times the meeting was recorded into; only written above 1.
     var sessions: Int? = nil
+    /// Your name, written on the mic side's turns instead of `you`. nil
+    /// leaves them `you`.
+    var youName: String? = nil
+    /// Who the far side's voices turned out to be, by the label the
+    /// diarizer gave them: `them 2` is `Priya`. A voice that is not here
+    /// keeps its label.
+    var voices: [String: String] = [:]
     let turns: [MeetingTurn]
 
     /// SPEC §4 extended: a transcript with holes says so, in its front matter
     /// and in its body, and so does one that does not cover what was said.
     var complete: Bool { gaps.isEmpty && reason == nil }
+
+    /// The names the file knows, you first and then the far side in the
+    /// order of its labels. A name that cannot be written (`SpeakerNames`)
+    /// is left out, and its speaker keeps the label; so is a far-side voice
+    /// with no turn in the file, which nobody in it was heard as. You are
+    /// there whether you spoke or not: you were in the meeting.
+    var names: [SpeakerName] {
+        var found: [SpeakerName] = []
+        if let name = SpeakerNames.clean(youName) {
+            found.append(SpeakerName(label: MeetingTurn.Speaker.you.label, name: name))
+        }
+        let heard = Set(turns.map(\.speaker.label))
+        for (label, raw) in voices.sorted(by: { SpeakerNames.rank($0.key) < SpeakerNames.rank($1.key) }) {
+            guard SpeakerNames.isOriginal(label), label != MeetingTurn.Speaker.you.label,
+                  heard.contains(label), let name = SpeakerNames.clean(raw)
+            else { continue }
+            found.append(SpeakerName(label: label, name: name))
+        }
+        return found
+    }
+}
+
+extension Sequence where Element == SpeakerName {
+    /// What a speaker's turns say before the colon: the name, or the label
+    /// when nobody has one.
+    func display(_ speaker: MeetingTurn.Speaker) -> String {
+        first { $0.label == speaker.label }?.name ?? speaker.label
+    }
+
+    /// Each name once, in order: a person two voices were found for is
+    /// still one person.
+    var participants: [String] {
+        var seen: [String] = []
+        for entry in self where !seen.contains(entry.name) {
+            seen.append(entry.name)
+        }
+        return seen
+    }
 }
 
 /// The transcript on disk: `<parent>/meetings/2026-08/2026-08-29-1402-zoom.md`,
@@ -109,7 +154,9 @@ enum MeetingTranscriptFile {
     - `started`, `ended`: local time with offset.
     - `duration_s`: length in seconds.
     - `engine`: the speech model that wrote it.
-    - `speakers`: who appears in the file. `you` is the mic. `them`, `them 1`, `them 2` are the other side.
+    - `speakers`: who appears in the file, as the body writes them. `you` is the mic, or your name if you have given one. `them`, `them 1`, `them 2` are the other side, until someone is named.
+    - `participants`: the names of the people who appear, once each. only there when someone is named.
+    - `voices`: which label each name replaced, one `- them 2: Priya` line each (`you` is the mic). only there when someone is named.
     - `words`: how many words the transcript has.
     - `complete`: false if any audio was lost or the transcript does not cover what was said. `reason` says why.
     - `gaps`: stretches of lost audio, as [start, end] in seconds from the start.
@@ -193,6 +240,9 @@ enum MeetingTranscriptFile {
         lines.append(contentsOf: [
             "engine: \(transcript.engine)",
             "speakers: [\(speakers(of: transcript).joined(separator: ", "))]",
+        ])
+        lines.append(contentsOf: nameLines(transcript.names))
+        lines.append(contentsOf: [
             "words: \(wordCount(of: transcript))",
             "complete: \(transcript.complete)",
         ])
@@ -239,9 +289,10 @@ enum MeetingTranscriptFile {
             lines.append("")
         }
 
+        let names = transcript.names
         for paragraph in paragraphs(of: transcript.turns) {
             lines.append(
-                "[\(paragraph.at.stamp)] \(paragraph.speaker.label): \(paragraph.text)")
+                "[\(paragraph.at.stamp)] \(names.display(paragraph.speaker)): \(paragraph.text)")
             lines.append("")
         }
         return lines
@@ -395,6 +446,13 @@ enum MeetingTranscriptFile {
         /// does not say, as a file from before sessions was one.
         let sessions: Int
         let engine: String
+        /// The names of the people in the meeting, as the file lists them;
+        /// empty for a file nobody is named in, which is every file from
+        /// before names.
+        var participants: [String] = []
+        /// Which label each name replaced (`them 2` is `Priya`, `you` is
+        /// the person recording): what a rename needs to undo itself.
+        var voices: [SpeakerName] = []
     }
 
     static func header(of url: URL) throws -> Header {
@@ -430,7 +488,9 @@ enum MeetingTranscriptFile {
             title: front.title,
             template: front.template,
             sessions: front.sessions,
-            engine: front.engine)
+            engine: front.engine,
+            participants: front.participants,
+            voices: front.voices)
     }
 
     /// The top of a file, read once for both of the ways it is read: the
@@ -448,6 +508,8 @@ enum MeetingTranscriptFile {
         let template: String?
         let sessions: Int
         let engine: String
+        let participants: [String]
+        let voices: [SpeakerName]
     }
 
     private static func frontMatter(of url: URL) throws -> FrontMatter {
@@ -464,10 +526,15 @@ enum MeetingTranscriptFile {
 
         var fields: [String: String] = [:]
         var gapLines: [String] = []
+        var voices: [SpeakerName] = []
         var closed = false
         for line in lines {
             if line == "---" { closed = true; break }
             if line.hasPrefix("- [") { gapLines.append(line); continue }
+            if line.hasPrefix("- ") {
+                if let voice = voice(line) { voices.append(voice) }
+                continue
+            }
             guard let colon = line.firstIndex(of: ":") else { continue }
             let key = String(line[..<colon])
             let value = line[line.index(after: colon)...]
@@ -498,7 +565,31 @@ enum MeetingTranscriptFile {
             title: oneLine(fields["title"], limit: titleLimit),
             template: oneLine(fields["template"], limit: templateLimit),
             sessions: max(1, fields["sessions"].flatMap { Int($0) } ?? 1),
-            engine: fields["engine"] ?? "")
+            engine: fields["engine"] ?? "",
+            participants: list(fields["participants"]) ?? [],
+            voices: voices)
+    }
+
+    /// `- them 2: Priya`. Anything else under a key of its own is not a
+    /// voice, and is left out.
+    static func voice(_ line: String) -> SpeakerName? {
+        let item = line.dropFirst(2)
+        guard let colon = item.firstIndex(of: ":") else { return nil }
+        let label = item[..<colon].trimmingCharacters(in: .whitespaces)
+        let name = item[item.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+        guard SpeakerNames.isOriginal(label), !name.isEmpty else { return nil }
+        return SpeakerName(label: label, name: name)
+    }
+
+    /// `[Suriya, Priya]`, as the front matter writes a list on one line; nil
+    /// for a value that is not one.
+    static func list(_ value: String?) -> [String]? {
+        guard var value, value.hasPrefix("["), value.hasSuffix("]") else { return nil }
+        value.removeFirst()
+        value.removeLast()
+        return value.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
     }
 
     /// The offset at the end of an ISO 8601 time, `+05:30` or `Z`.
@@ -598,7 +689,7 @@ enum MeetingTranscriptFile {
     /// `try?` on the mode for the reason `write` gives. Nothing here
     /// serialises two changes to one file: the one place that makes them
     /// (the summaries) keeps one going per file.
-    private static func change(
+    static func change(
         _ url: URL,
         fileManager: FileManager,
         _ transform: (String) -> String?
@@ -613,7 +704,7 @@ enum MeetingTranscriptFile {
         try store(changed, at: url, fileManager: fileManager)
     }
 
-    private static func store(
+    static func store(
         _ text: String,
         at url: URL,
         fileManager: FileManager
@@ -668,6 +759,7 @@ enum MeetingTranscriptFile {
         guard let parts = split(text) else { throw Failure.noFrontMatter(url) }
         let old = try document(parsing: text, url: url)
         let header = old.header
+        let transcript = keepingYouAsTheFileHasThem(transcript, in: old)
         var front = FrontLines(parts.front)
 
         let reasons = [
@@ -705,7 +797,21 @@ enum MeetingTranscriptFile {
         front.set(
             "speakers", to: ["speakers: [\(labels.joined(separator: ", "))]"],
             after: "engine")
-        front.set("words", to: ["words: \(words)"], after: "speakers")
+        // names the file already has stay as they were: a label is one
+        // person for the whole file, so a new session cannot give a label
+        // a second name here, though its own turns do say the name.
+        var names = header.voices
+        for name in transcript.names where !names.contains(where: { $0.label == name.label }) {
+            names.append(name)
+        }
+        names.sort { SpeakerNames.rank($0.label) < SpeakerNames.rank($1.label) }
+        let written = nameLines(names)
+        front.set(
+            "participants", to: written.isEmpty ? nil : [written[0]], after: "speakers")
+        front.set(
+            "voices", to: written.isEmpty ? nil : Array(written.dropFirst()),
+            after: "participants")
+        front.set("words", to: ["words: \(words)"], after: written.isEmpty ? "speakers" : "voices")
         front.set("complete", to: ["complete: \(complete)"], after: "words")
         front.set(
             "reason",
@@ -739,6 +845,23 @@ enum MeetingTranscriptFile {
         ]
         body += bodyLines(of: transcript)
         return join(front.lines, body)
+    }
+
+    /// One person is one speaker for the whole file, so a session recorded
+    /// into it says `you` the way the file does: by the name it gave them,
+    /// or `you` if it has been saying that. A file with nobody of yours in
+    /// it yet takes the name this session brings.
+    private static func keepingYouAsTheFileHasThem(
+        _ transcript: MeetingTranscript, in old: MeetingDocument
+    ) -> MeetingTranscript {
+        var kept = transcript
+        let you = MeetingTurn.Speaker.you.label
+        if let name = old.header.voices.first(where: { $0.label == you }) {
+            kept.youName = name.name
+        } else if old.speakers.contains(you) {
+            kept.youName = nil
+        }
+        return kept
     }
 
     /// `## 17 oct 2026 · 09:30`, the way a person would write it.
@@ -791,14 +914,14 @@ enum MeetingTranscriptFile {
         return (Array(lines[1..<close]), Array(lines[(close + 1)...]))
     }
 
-    private static func join(_ front: [String], _ body: [String]) -> String {
+    static func join(_ front: [String], _ body: [String]) -> String {
         (["---"] + front + ["---"] + body).joined(separator: "\n")
     }
 
     /// The front matter as `key: value` blocks, so a list (the gaps) moves
     /// with its key and a key can be replaced, added or taken out without
     /// the others moving.
-    private struct FrontLines {
+    struct FrontLines {
         private struct Block {
             var key: String
             var lines: [String]
@@ -877,11 +1000,23 @@ enum MeetingTranscriptFile {
 
     /// The labels the body uses, each once, in the order they first speak.
     private static func speakers(of transcript: MeetingTranscript) -> [String] {
+        let names = transcript.names
         var labels: [String] = []
-        for turn in transcript.turns where !labels.contains(turn.speaker.label) {
-            labels.append(turn.speaker.label)
+        for turn in transcript.turns {
+            let label = names.display(turn.speaker)
+            if !labels.contains(label) { labels.append(label) }
         }
         return labels
+    }
+
+    /// `participants` and `voices`, for a file that has a name in it: who
+    /// took part, and which label each name replaced, so a name can be
+    /// taken back. Nothing for a file with no names, which reads as it
+    /// always did.
+    static func nameLines(_ names: [SpeakerName]) -> [String] {
+        guard !names.isEmpty else { return [] }
+        return ["participants: [\(names.participants.joined(separator: ", "))]", "voices:"]
+            + names.map { "- \($0.label): \($0.name)" }
     }
 
     /// Whitespace-separated, over what was said: not the labels or the stamps.

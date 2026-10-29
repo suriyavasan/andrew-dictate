@@ -13,6 +13,10 @@ final class MeetingSpeakerSplitTests: XCTestCase {
     private var transcriber: ScriptedTranscriber!
     private var hearing: PieceHearing!
     private var records: [MeetingRecord] = []
+    private var book: VoiceBook!
+    private var prints: MeetingVoicePrints!
+    private var yourName: String?
+    private var rememberVoices = false
 
     override func setUp() async throws {
         dir = FileManager.default.temporaryDirectory
@@ -22,6 +26,10 @@ final class MeetingSpeakerSplitTests: XCTestCase {
         transcriber = ScriptedTranscriber()
         hearing = PieceHearing()
         records = []
+        book = VoiceBook(url: dir.appendingPathComponent("voices.json"))
+        prints = MeetingVoicePrints(folder: dir.appendingPathComponent("meeting-voices"))
+        yourName = nil
+        rememberVoices = false
     }
 
     override func tearDown() async throws {
@@ -39,11 +47,14 @@ final class MeetingSpeakerSplitTests: XCTestCase {
             diarizer: PieceDiarizer(ear: hearing),
             spool: MeetingSpool(root: dir.appendingPathComponent("spool")),
             hookRunner: HookRunner(logURL: dir.appendingPathComponent("hooks.log")),
+            voiceBook: book,
+            voicePrints: prints,
             thresholds: thresholds,
             preferences: { [unowned self] in
                 MeetingPreferences(
                     folder: dir.appendingPathComponent("docs"), hook: nil,
-                    model: .whisperLargeV3Turbo, keepAudio: .deleteAtOnce)
+                    model: .whisperLargeV3Turbo, keepAudio: .deleteAtOnce,
+                    yourName: yourName, rememberVoices: rememberVoices)
             }
         )
         c.keepMeetingRecord = { [weak self] in self?.records.append($0) }
@@ -185,7 +196,196 @@ final class MeetingSpeakerSplitTests: XCTestCase {
         ])
     }
 
+    // MARK: - names
+
+    /// Priya was named in an earlier meeting and her voice is in the book.
+    /// `them 1` sounds like her and `them 2` like nobody; you are Suriya.
+    /// The file says who spoke, by name, and keeps the voices so the rest
+    /// can be named later.
+    func testARememberedVoiceAndYourNameReachTheFile() async throws {
+        book.learn([1, 0, 0], as: "Priya")
+        yourName = "Suriya"
+        rememberVoices = true
+        hearing.speak([(from: .zero, number: 4), (from: .seconds(2), number: 8)])
+        hearing.embeddings = ["them 4": [0.97, 0.1, 0], "them 8": [0, 1, 0]]
+        transcriber.finalTurns = [
+            MeetingTurn(speaker: .you, at: .seconds(0.5), text: "hello all"),
+            them("hello", at: 0.2),
+            them("yes", at: 2.2),
+        ]
+        try await record(seconds: 4)
+
+        let text = try transcriptText()
+        XCTAssertTrue(text.contains("speakers: ["))
+        XCTAssertTrue(text.contains("participants: [Suriya, Priya]"))
+        XCTAssertTrue(text.contains("voices:\n- you: Suriya\n- them 1: Priya\n"))
+        XCTAssertTrue(text.contains("] Suriya: hello all"))
+        XCTAssertTrue(text.contains("] Priya: hello"))
+        XCTAssertTrue(text.contains("] them 2: yes"))
+
+        // the voice that was recognised sharpened her average; both were kept.
+        XCTAssertEqual(book.people().map(\.name), ["Priya"])
+        XCTAssertEqual(book.people()[0].samples, 2)
+        let url = try XCTUnwrap(MeetingTranscriptFile.listAll(in: dir.appendingPathComponent("docs")).first).fileURL
+        let kept = prints.prints(for: url)
+        XCTAssertEqual(Set(kept.keys), ["them 1", "them 2"])
+        XCTAssertEqual(kept["them 1"]?.taught, "Priya")
+        XCTAssertNil(kept["them 2"]?.taught)
+    }
+
+    /// With "remember voices" off, your name still goes in the file, and no
+    /// voice is matched, taught or kept.
+    func testWithRememberingOffNobodyIsRecognisedOrKept() async throws {
+        book.learn([1, 0, 0], as: "Priya")
+        yourName = "Suriya"
+        rememberVoices = false
+        hearing.speak([(from: .zero, number: 4), (from: .seconds(2), number: 8)])
+        hearing.embeddings = ["them 4": [1, 0, 0], "them 8": [0, 1, 0]]
+        transcriber.finalTurns = [
+            MeetingTurn(speaker: .you, at: .seconds(0.5), text: "hello all"),
+            them("hello", at: 0.2),
+            them("yes", at: 2.2),
+        ]
+        try await record(seconds: 4)
+
+        let text = try transcriptText()
+        XCTAssertTrue(text.contains("] Suriya: hello all"))
+        XCTAssertTrue(text.contains("] them 1: hello"))
+        XCTAssertFalse(text.contains("Priya"))
+        XCTAssertEqual(book.people()[0].samples, 1)
+        let url = try XCTUnwrap(MeetingTranscriptFile.listAll(in: dir.appendingPathComponent("docs")).first).fileURL
+        XCTAssertTrue(prints.prints(for: url).isEmpty)
+    }
+
+    /// Two clusters that both sound like Priya: neither is a name nobody
+    /// should be sure of. Neither is named, but both are kept.
+    func testTwoVoicesThatSoundLikeOnePersonAreNotNamed() async throws {
+        book.learn([1, 0, 0], as: "Priya")
+        rememberVoices = true
+        hearing.speak([(from: .zero, number: 4), (from: .seconds(2), number: 8)])
+        hearing.embeddings = ["them 4": [0.9, 0.3, 0], "them 8": [0.9, 0, 0.3]]
+        transcriber.finalTurns = [them("hello", at: 0.2), them("yes", at: 2.2)]
+        try await record(seconds: 4)
+
+        let text = try transcriptText()
+        XCTAssertFalse(text.contains("Priya"))
+        XCTAssertFalse(text.contains("participants"))
+        XCTAssertEqual(book.people()[0].samples, 1)
+    }
+
+    /// A piece the diarizer was too far behind to hear leaves `them`, and
+    /// the numbers close up: the voice that was `them 2` to the diarizer is
+    /// `them 1` in the file, and its embedding is the one kept under that.
+    func testTheEmbeddingFollowsTheNumberTheFileGaveTheVoice() async throws {
+        rememberVoices = true
+        hearing.fail(at: .seconds(1), times: 2)
+        hearing.speak([(from: .zero, number: 7), (from: .seconds(2), number: 3)])
+        hearing.embeddings = ["them 7": [1, 0, 0], "them 3": [0, 1, 0]]
+        transcriber.finalTurns = [
+            them("hello", at: 1.2),
+            them("yes", at: 2.2),
+            them("good", at: 3.2),
+        ]
+        try await record(seconds: 4)
+
+        let url = try XCTUnwrap(MeetingTranscriptFile.listAll(in: dir.appendingPathComponent("docs")).first).fileURL
+        let text = try transcriptText()
+        XCTAssertTrue(text.contains("] them: hello"))
+        XCTAssertTrue(text.contains("] them 1: yes good"))
+        // the file's `them 1` is the diarizer's `them 2`.
+        XCTAssertEqual(prints.prints(for: url)["them 1"]?.embedding, [0, 1, 0])
+        XCTAssertNil(prints.prints(for: url)["them 2"])
+        XCTAssertNil(prints.prints(for: url)["them"])
+    }
+
+    /// The whole of it: a meeting is saved with an unnamed voice, it is
+    /// named by hand, and the next meeting recognises it.
+    func testNamingAVoiceByHandIsRecognisedInTheNextMeeting() async throws {
+        rememberVoices = true
+        hearing.speak([(from: .zero, number: 4), (from: .seconds(2), number: 8)])
+        hearing.embeddings = ["them 4": [1, 0, 0], "them 8": [0, 1, 0]]
+        transcriber.finalTurns = [them("hello", at: 0.2), them("yes", at: 2.2)]
+        try await record(seconds: 4)
+        let url = try XCTUnwrap(MeetingTranscriptFile.listAll(in: dir.appendingPathComponent("docs")).first).fileURL
+
+        let naming = SpeakerNaming(voiceBook: book, voicePrints: prints, remembering: { true })
+        try naming.rename("them 2", to: "Rahul", at: url)
+        XCTAssertTrue(try transcriptText().contains("] Rahul: yes"))
+        XCTAssertEqual(book.people().map(\.name), ["Rahul"])
+        XCTAssertEqual(prints.prints(for: url)["them 2"]?.taught, "Rahul")
+
+        // the second meeting: the same voice, a different day.
+        source = ChunkSource()
+        hearing = PieceHearing()
+        hearing.speak([(from: .zero, number: 9)])
+        hearing.embeddings = ["them 9": [0.05, 0.99, 0]]
+        transcriber.finalTurns = [them("morning", at: 0.2)]
+        try await record(seconds: 4)
+        let second = try XCTUnwrap(
+            MeetingTranscriptFile.listAll(in: dir.appendingPathComponent("docs"))
+                .first { $0.fileURL != url }).fileURL
+        let text = try String(contentsOf: second, encoding: .utf8)
+        XCTAssertTrue(text.contains("] Rahul: morning"), text)
+        XCTAssertEqual(book.people()[0].samples, 2)
+    }
+
+    /// Naming by hand and changing your mind: the voice is taken out of the
+    /// first person and put into the second, and out of both when the label
+    /// is put back.
+    func testRenamingMovesTheVoiceBetweenPeopleAndBackOut() async throws {
+        rememberVoices = true
+        hearing.speak([(from: .zero, number: 4), (from: .seconds(2), number: 8)])
+        hearing.embeddings = ["them 4": [1, 0, 0], "them 8": [0, 1, 0]]
+        transcriber.finalTurns = [them("hello", at: 0.2), them("yes", at: 2.2)]
+        try await record(seconds: 4)
+        let url = try XCTUnwrap(MeetingTranscriptFile.listAll(in: dir.appendingPathComponent("docs")).first).fileURL
+        let naming = SpeakerNaming(voiceBook: book, voicePrints: prints, remembering: { true })
+
+        try naming.rename("them 1", to: "Priya", at: url)
+        try naming.rename("Priya", to: "Priyanka", at: url)
+        XCTAssertEqual(book.people().map(\.name), ["Priyanka"])
+        XCTAssertEqual(book.people()[0].samples, 1)
+        XCTAssertEqual(prints.prints(for: url)["them 1"]?.taught, "Priyanka")
+
+        try naming.rename("Priyanka", to: nil, at: url)
+        XCTAssertTrue(book.people().isEmpty)
+        XCTAssertNil(prints.prints(for: url)["them 1"]?.taught)
+        XCTAssertTrue(try transcriptText().contains("] them 1: hello"))
+    }
+
+    /// With "remember voices" off a name goes into the file and nowhere else.
+    func testNamingWithRememberingOffTeachesNothing() async throws {
+        rememberVoices = true
+        hearing.speak([(from: .zero, number: 4), (from: .seconds(2), number: 8)])
+        hearing.embeddings = ["them 4": [1, 0, 0], "them 8": [0, 1, 0]]
+        transcriber.finalTurns = [them("hello", at: 0.2), them("yes", at: 2.2)]
+        try await record(seconds: 4)
+        let url = try XCTUnwrap(MeetingTranscriptFile.listAll(in: dir.appendingPathComponent("docs")).first).fileURL
+
+        let naming = SpeakerNaming(voiceBook: book, voicePrints: prints, remembering: { false })
+        try naming.rename("them 1", to: "Priya", at: url)
+        XCTAssertTrue(try transcriptText().contains("] Priya: hello"))
+        XCTAssertTrue(book.people().isEmpty)
+    }
+
     // MARK: -
+
+    private func record(seconds: Int) async throws {
+        let c = coordinator()
+        c.start()
+        await source.awaitStart()
+        for s in 0..<seconds {
+            source.send(loud(at: .seconds(s)))
+        }
+        await hearing.heard(seconds - 1)
+        c.stop()
+        await c.untilWrittenOut()
+    }
+
+    private func transcriptText() throws -> String {
+        let files = MeetingTranscriptFile.listAll(in: dir.appendingPathComponent("docs"))
+        return try String(contentsOf: try XCTUnwrap(files.last).fileURL, encoding: .utf8)
+    }
 
     private func silence(at: Duration) -> MeetingAudioChunk {
         .init(you: Array(repeating: 0, count: 16_000),
@@ -248,6 +448,17 @@ private final class PieceHearing: SpeakerHearing, @unchecked Sendable {
     private var _pieces: [Piece] = []
     private var failures: [Duration: Int] = [:]
     private var voices: [(from: Duration, number: Int)] = []
+    private var _embeddings: [String: [Float]] = [:]
+
+    /// The embedding behind each label the file will give a voice.
+    var embeddings: [String: [Float]] {
+        get { lock.withLock { _embeddings } }
+        set { lock.withLock { _embeddings = newValue } }
+    }
+
+    func voices(of turns: [MeetingTurn]) async -> [String: [Float]] {
+        embeddings
+    }
 
     var pieces: [Piece] {
         lock.withLock { _pieces }

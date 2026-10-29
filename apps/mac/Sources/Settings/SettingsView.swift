@@ -73,6 +73,7 @@ struct SettingsView: View {
                 countSetAside: { spool.unreadableCount() },
                 tryAgain: { await coordinator.meetings.coordinator.tryAgainSetAside() },
                 keptAudio: KeptAudio(),
+                voicePrints: MeetingVoicePrints(),
                 installedModels: { ModelFiles.installed() },
                 transcribeAgain: { transcript, model in
                     Task { @MainActor in
@@ -651,6 +652,8 @@ struct SettingsView: View {
             MeetingShortcutRow(settings: settings, coordinator: coordinator)
             rowDivider
             meetingsFolderRow
+            rowDivider
+            VoicesSettings(settings: settings)
             rowDivider
             meetingAudioRow
             rowDivider

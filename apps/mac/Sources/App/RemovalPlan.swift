@@ -131,8 +131,8 @@ struct Remover {
     }
 
     /// files that go with an item without being its url: the meeting audio
-    /// kept after a transcript (ADR 0048) and the meeting hook's log, with
-    /// the spool; the press log, which is evidence about your dictations
+    /// kept after a transcript (ADR 0048), the meeting hook's log and the
+    /// remembered voices, with the spool; the press log, which is evidence about your dictations
     /// and has no reason to outlive them, and the meeting records beside it,
     /// which say when you were on a call; and the never-learn list, the
     /// learned rows you turned down, which belongs to the dictionary they
@@ -150,6 +150,11 @@ struct Remover {
             [
                 supportDirectory.appendingPathComponent(KeptAudio.folderName, isDirectory: true),
                 supportDirectory.appendingPathComponent("hooks.log"),
+                // the voices this mac learned to recognise, and the ones kept
+                // from each meeting: people's voiceprints go with the
+                // meetings they were taken from.
+                supportDirectory.appendingPathComponent(VoiceBook.fileName),
+                supportDirectory.appendingPathComponent(MeetingVoicePrints.folderName, isDirectory: true),
             ]
         case .settings, .speechModels, .permissions:
             []

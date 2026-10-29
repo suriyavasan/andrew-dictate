@@ -52,6 +52,24 @@ struct MeetingDocument: Equatable, Sendable {
         return labels
     }
 
+    /// What the file calls you: the name it gave you, or `you` when it has
+    /// not (every file from before names).
+    var youLabel: String {
+        header.voices.first { $0.label == MeetingTurn.Speaker.you.label }?.name
+            ?? MeetingTurn.Speaker.you.label
+    }
+
+    /// Whether a label on a turn is the person who recorded, by either name.
+    func isYou(_ speaker: String) -> Bool {
+        speaker == MeetingTurn.Speaker.you.label || speaker == youLabel
+    }
+
+    /// `speakers`, with you as `you` whatever the file calls you: the one
+    /// spelling the window gives its own colour to.
+    var speakersWithYou: [String] {
+        speakers.map { isYou($0) ? MeetingTurn.Speaker.you.label : $0 }
+    }
+
     /// Whitespace-separated, over what was said: the same count the file's
     /// `words` key makes.
     var wordCount: Int {

@@ -298,12 +298,19 @@ protocol SpeakerHearing: Sendable {
     /// answers from what it has: a piece still being heard is not waited
     /// for, so a stop that gave up on one is not held up by it here.
     func split(_ turns: [MeetingTurn]) async -> [MeetingTurn]
+    /// The voice behind each label `split` gave these turns — `them 2` —
+    /// as the embedding the diarizer holds for it, so a voice can be
+    /// recognised in another meeting. Plain `them` when there was one
+    /// voice. Empty for a diarizer that does not keep them.
+    func voices(of turns: [MeetingTurn]) async -> [String: [Float]]
 }
 
 extension SpeakerHearing {
     var pieceLength: Int {
         SpeakerPieces.length
     }
+
+    func voices(of turns: [MeetingTurn]) async -> [String: [Float]] { [:] }
 }
 
 /// The pieces, kept, and handed to a diarizer that hears only whole

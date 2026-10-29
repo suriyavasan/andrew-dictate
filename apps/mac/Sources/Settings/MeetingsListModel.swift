@@ -42,6 +42,7 @@ final class MeetingsListModel: ObservableObject {
     private let countSetAside: () -> Int
     private let retrySetAside: (@MainActor () async -> Void)?
     private let keptAudio: KeptAudio?
+    private let voicePrints: MeetingVoicePrints?
     private let installedModels: () -> Set<SpeechModel>
     private let startAgain: ((URL, SpeechModel) -> Void)?
     private let now: () -> Date
@@ -58,6 +59,7 @@ final class MeetingsListModel: ObservableObject {
         countSetAside: @escaping () -> Int = { 0 },
         tryAgain: (@MainActor () async -> Void)? = nil,
         keptAudio: KeptAudio? = nil,
+        voicePrints: MeetingVoicePrints? = nil,
         installedModels: @escaping () -> Set<SpeechModel> = { [] },
         transcribeAgain: ((URL, SpeechModel) -> Void)? = nil,
         now: @escaping () -> Date = { Date() },
@@ -70,6 +72,7 @@ final class MeetingsListModel: ObservableObject {
         self.countSetAside = countSetAside
         self.retrySetAside = tryAgain
         self.keptAudio = keptAudio
+        self.voicePrints = voicePrints
         self.installedModels = installedModels
         self.startAgain = transcribeAgain
         self.now = now
@@ -132,7 +135,7 @@ final class MeetingsListModel: ObservableObject {
     func delete(_ meeting: MeetingSummary) {
         do {
             try MeetingRemoval.remove(
-                meeting.fileURL, keptAudio: keptAudio, trash: trash)
+                meeting.fileURL, keptAudio: keptAudio, voicePrints: voicePrints, trash: trash)
             failure = nil
         } catch {
             // SPEC §4: a delete that did not happen must not look like one

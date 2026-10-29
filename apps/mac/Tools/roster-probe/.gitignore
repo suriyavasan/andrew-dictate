@@ -1,0 +1,7 @@
+.build/
+# dumps and logs hold participant names and on-screen text. they go to
+# /tmp/roster-probe by default and never belong in the repo.
+*.json
+*.jsonl
+*.txt
+/out/

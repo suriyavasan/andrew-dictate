@@ -4,7 +4,7 @@ import Foundation
 /// the trash (recoverable, because the app is not entitled to shred an hour
 /// of someone else's words on one click), and the audio kept for it goes for
 /// good, since nothing is left to check it against and there is no reason to
-/// keep someone's voice past the words they said. the history list and the
+/// keep someone's voice past the words they said — the embeddings kept for naming its speakers included. the history list and the
 /// meetings window both end here.
 enum MeetingRemoval {
     static func trashItem(_ url: URL) throws {
@@ -17,9 +17,12 @@ enum MeetingRemoval {
     static func remove(
         _ transcript: URL,
         keptAudio: KeptAudio?,
+        voicePrints: MeetingVoicePrints? = nil,
         trash: (URL) throws -> Void = MeetingRemoval.trashItem
     ) throws {
         try trash(transcript)
         keptAudio?.deleteAudio(of: transcript)
+        // the voices kept for naming its speakers go with it, like the audio.
+        voicePrints?.discard(for: transcript)
     }
 }
