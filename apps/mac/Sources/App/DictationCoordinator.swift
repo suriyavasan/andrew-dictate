@@ -403,6 +403,7 @@ final class DictationCoordinator: ObservableObject {
                 source: CoreAudioMeetingSource(),
                 makeTranscriber: { try await MeetingEngines.makeTranscriber(for: $0) },
                 diarizer: MeetingEngines.makeDiarizer(),
+                liveFeed: .inSupport(),
                 preferences: {
                     MeetingPreferences(
                         folder: settings.meetingsFolder,

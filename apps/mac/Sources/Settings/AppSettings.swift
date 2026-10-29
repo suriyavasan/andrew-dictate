@@ -381,7 +381,8 @@ final class AppSettings: ObservableObject {
     /// read without the settings object by whatever renames a speaker off
     /// the main actor.
     nonisolated static let rememberVoicesKey = "AndrewDictate.rememberVoices"
-    private static let meetingsFolderKey = "AndrewDictate.meetingsFolder"
+    /// read by the mcp server in its own process, which has no `AppSettings`.
+    static let meetingsFolderKey = "AndrewDictate.meetingsFolder"
     private static let meetingHookKey = "AndrewDictate.meetingHook"
     private static let keepMeetingAudioKey = "AndrewDictate.keepMeetingAudio"
     private static let meetingHookLastRunAtKey =

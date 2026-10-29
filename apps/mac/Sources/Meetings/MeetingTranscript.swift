@@ -453,6 +453,10 @@ enum MeetingTranscriptFile {
         /// Which label each name replaced (`them 2` is `Priya`, `you` is
         /// the person recording): what a rename needs to undo itself.
         var voices: [SpeakerName] = []
+        /// Who the body names as speaking, as it writes them: `you`, `them
+        /// 2`, `Priya`. What a reader that does not parse turns needs to
+        /// know who to look for.
+        var speakers: [String] = []
     }
 
     static func header(of url: URL) throws -> Header {
@@ -490,7 +494,8 @@ enum MeetingTranscriptFile {
             sessions: front.sessions,
             engine: front.engine,
             participants: front.participants,
-            voices: front.voices)
+            voices: front.voices,
+            speakers: front.speakers)
     }
 
     /// The top of a file, read once for both of the ways it is read: the
@@ -510,6 +515,7 @@ enum MeetingTranscriptFile {
         let engine: String
         let participants: [String]
         let voices: [SpeakerName]
+        let speakers: [String]
     }
 
     private static func frontMatter(of url: URL) throws -> FrontMatter {
@@ -567,7 +573,8 @@ enum MeetingTranscriptFile {
             sessions: max(1, fields["sessions"].flatMap { Int($0) } ?? 1),
             engine: fields["engine"] ?? "",
             participants: list(fields["participants"]) ?? [],
-            voices: voices)
+            voices: voices,
+            speakers: list(fields["speakers"]) ?? [])
     }
 
     /// `- them 2: Priya`. Anything else under a key of its own is not a

@@ -655,6 +655,8 @@ struct SettingsView: View {
             rowDivider
             VoicesSettings(settings: settings)
             rowDivider
+            AgentsSettings()
+            rowDivider
             meetingAudioRow
             rowDivider
             meetingHookRow

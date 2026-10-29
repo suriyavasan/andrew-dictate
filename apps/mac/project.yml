@@ -50,6 +50,15 @@ targets:
     dependencies:
       - package: FluidAudio
       - package: WhisperKit
+      # the mcp server an agent runs (`claude mcp add … -- <this>`), inside
+      # the app so it ships, is signed with it (`codesign --deep` reaches
+      # Contents/Helpers) and is found from Bundle.main.
+      - target: andrew-dictate-mcp
+        embed: true
+        codeSign: true
+        copy:
+          destination: wrapper
+          subpath: Contents/Helpers
     settings:
       base:
         PRODUCT_NAME: Andrew Dictate
@@ -120,6 +129,36 @@ targets:
         # tap hears silence — "can't hear the mac" with no switch to flip.
         NSAudioCaptureUsageDescription: "andrew dictate hears what this mac plays only while you record a meeting, so the other side of the call is in the transcript."
 
+  # the meetings, over the model context protocol, for an agent. a command
+  # line tool in its own process: no FluidAudio, no WhisperKit, no UI. it
+  # reads the files the app writes, with the app's own parser, so what
+  # these few sources share with the app cannot drift from it.
+  andrew-dictate-mcp:
+    type: tool
+    platform: macOS
+    sources:
+      - MCP
+      - Sources/App/AppIdentity.swift
+      - Sources/Archive/MeetingSession.swift
+      - Sources/Meetings/DurationText.swift
+      - Sources/Meetings/LiveFeed.swift
+      - Sources/Meetings/LiveLine.swift
+      - Sources/Meetings/MeetingDocument.swift
+      - Sources/Meetings/MeetingSummary.swift
+      - Sources/Meetings/MeetingTranscript.swift
+      - Sources/Meetings/OrderedJSON.swift
+      - Sources/Meetings/SpeakerNames.swift
+    settings:
+      base:
+        PRODUCT_NAME: andrew-dictate-mcp
+        PRODUCT_BUNDLE_IDENTIFIER: gg.jass.dictate.mcp
+        ARCHS: arm64
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        ENABLE_HARDENED_RUNTIME: false
+        SKIP_INSTALL: true
+        SWIFT_STRICT_CONCURRENCY: complete
+
   AndrewDictateTests:
     type: bundle.unit-test
     platform: macOS
@@ -161,6 +200,9 @@ targets:
           - MeetingEngines.swift
           - ParakeetStretchEngine.swift
           - SileroDetector.swift
+      # the mcp server's reader and its json-rpc: tested here, run in
+      # andrew-dictate-mcp (main.swift is not part of the test bundle).
+      - MCP/Server
       - Sources/Settings/MeetingsListModel.swift
       - Sources/Onboarding/OnboardingMeetingSetup.swift
       - Sources/App/AppIdentity.swift

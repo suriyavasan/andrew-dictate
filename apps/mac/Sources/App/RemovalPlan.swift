@@ -155,6 +155,8 @@ struct Remover {
                 // meetings they were taken from.
                 supportDirectory.appendingPathComponent(VoiceBook.fileName),
                 supportDirectory.appendingPathComponent(MeetingVoicePrints.folderName, isDirectory: true),
+                // the live feeds: lines of the last meetings, for an agent.
+                supportDirectory.appendingPathComponent(LiveFeed.folderName, isDirectory: true),
             ]
         case .settings, .speechModels, .permissions:
             []

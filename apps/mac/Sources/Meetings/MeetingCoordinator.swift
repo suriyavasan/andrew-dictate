@@ -397,6 +397,10 @@ final class MeetingCoordinator: ObservableObject {
     /// The bytes free on the disk holding a folder, or nil when that cannot
     /// be told. Injected so a test can fill the disk.
     private let freeSpace: @Sendable (URL) -> Int64?
+    /// Where the meeting being recorded is written as it goes, for an agent
+    /// to follow (`LiveFeed`). nil writes nothing: a test that does not ask
+    /// leaves no file in the real support folder.
+    private let liveFeed: LiveFeed?
     /// A whole spool, or kept audio, read into memory: for a recovery, a
     /// reading again and a transcribing again. Never on the main actor —
     /// three hours of it is gigabytes and seconds of reading, and the menu
@@ -433,6 +437,7 @@ final class MeetingCoordinator: ObservableObject {
         keptAudio: KeptAudio? = nil,
         voiceBook: VoiceBook? = nil,
         voicePrints: MeetingVoicePrints? = nil,
+        liveFeed: LiveFeed? = nil,
         thresholds: MeetingThresholds = .provisional,
         now: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now },
         date: @escaping @Sendable () -> Date = { Date() },
@@ -463,6 +468,7 @@ final class MeetingCoordinator: ObservableObject {
             url: support.appendingPathComponent(VoiceBook.fileName))
         self.voicePrints = voicePrints ?? MeetingVoicePrints(
             folder: support.appendingPathComponent(MeetingVoicePrints.folderName, isDirectory: true))
+        self.liveFeed = liveFeed
         self.thresholds = thresholds
         self.now = now
         self.date = date
@@ -528,6 +534,8 @@ final class MeetingCoordinator: ObservableObject {
             preferences: snapshot, title: title, appendTo: appendingTo)
         current = meeting
         meeting.awake = keepAwake.hold()
+        meeting.feed = liveFeed?.begin(
+            app: meeting.app, started: meeting.started, youName: snapshot.yourName)
 
         session.start()
         health = Self.freshMonitor(thresholds)
@@ -817,6 +825,7 @@ final class MeetingCoordinator: ObservableObject {
         guard current === meeting else { return }
         let recording = letGo(of: meeting, at: elapsed)
         meeting.lines?.cancel()
+        meeting.feed?.end(saved: nil)
         _ = closeTheTap(of: meeting)
         keepMeetingRecord?(MeetingRecord(
             .modelFailed, app: meeting.app, model: meeting.preferences.model,
@@ -1533,6 +1542,9 @@ final class MeetingCoordinator: ObservableObject {
         meeting.lines = Task { [weak self] in
             for await line in transcriber.lines {
                 guard let self, !Task.isCancelled else { break }
+                // the meeting's own feed takes its lines until it ends, even
+                // while the next meeting is the one on screen.
+                meeting.feed?.record(line)
                 // a meeting stopped is still decoding what it had queued;
                 // once the next has started, the view is the next one's.
                 guard current == nil || current === meeting else { continue }
@@ -1558,6 +1570,7 @@ final class MeetingCoordinator: ObservableObject {
     ) async {
         guard let recording, let handle = meeting.handle else {
             meeting.lines?.cancel()
+            meeting.feed?.end(saved: nil)
             if let handle = meeting.handle { spool.discard(handle) }
             keepMeetingRecord?(MeetingRecord(
                 .nothingKept(why),
@@ -1595,6 +1608,7 @@ final class MeetingCoordinator: ObservableObject {
             title: meeting.title, appendTo: meeting.appendTo,
             notes: meeting.notes, speakers: meeting.speakers,
             yourName: prefs.yourName, rememberVoices: prefs.rememberVoices)
+        meeting.feed?.end(saved: saved?.event.transcript)
         if let label = saved?.keep {
             await keep(handle, as: label)
         }
@@ -2235,6 +2249,8 @@ extension MeetingCoordinator {
         /// Opens the tap, then reads it until the meeting stops.
         var capture: Task<Void, Never>?
         var lines: Task<Void, Never>?
+        /// Its live feed, from its start to its end; nil without one.
+        var feed: LiveFeed.Session?
         var watchdog: Task<Void, Never>?
         /// A rebuild of its tap, while one is in flight.
         var rebuild: Task<Void, Never>?
